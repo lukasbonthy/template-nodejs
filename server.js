@@ -2,107 +2,70 @@ import express from "express";
 import http from "http";
 import compression from "compression";
 import helmet from "helmet";
-import nocache from "nocache";
-import { WebSocketServer } from "ws";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
+import { Server as SocketIO } from "socket.io";
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
 
 const app = express();
+const server = http.createServer(app);
+const io = new SocketIO(server, {
+  // Explicit path to avoid surprises; the client will match this.
+  path: "/socket.io",
+  cors: { origin: true, credentials: true }
+});
+
 const PORT = process.env.PORT || 3000;
 
-// Basic hardening + perf
-app.use(helmet({
-  contentSecurityPolicy: {
-    useDefaults: true,
-    directives: {
-      "script-src": ["'self'", "https://cdn.tailwindcss.com", "'unsafe-inline'"],
-      "style-src": ["'self'", "'unsafe-inline'"],
-      "img-src": ["'self'", "data:"],
-      "connect-src": ["'self'"],
-    }
-  }
-}));
+/* Security + perf (keep CSP off since we use CDN + inline scripts) */
+app.use(helmet({ contentSecurityPolicy: false }));
 app.use(compression());
-app.use(nocache());
-app.use(express.static("public", { extensions: ["html"] }));
 
-// SPA fallback (optional)
-app.get("*", (req, res, next) => {
-  if (req.accepts("html")) return res.sendFile(process.cwd() + "/public/index.html");
-  return next();
-});
+/* Static files */
+app.use(express.static(path.join(__dirname, "public"), { extensions: ["html"] }));
 
-const server = http.createServer(app);
+/* In-memory message store */
+const HISTORY_LIMIT = 300;
+let history = []; // [{id,user,text,ts}]
 
-// ========== WebSocket ==========
-const wss = new WebSocketServer({ noServer: true });
-const clients = new Set();
+/* Socket.IO messaging */
+io.on("connection", (socket) => {
+  console.log("client connected:", socket.id);
 
-// keep a small in-memory buffer (optional)
-const HISTORY_LIMIT = 200;
-let history = [];
+  // send hello + history to the new client
+  socket.emit("hello", { serverTime: Date.now() });
+  if (history.length) socket.emit("history", history);
 
-function broadcast(obj, except=null) {
-  const data = JSON.stringify(obj);
-  for (const ws of clients) {
-    if (ws !== except && ws.readyState === ws.OPEN) ws.send(data);
-  }
-}
-
-function addToHistory(evt) {
-  history.push(evt);
-  if (history.length > HISTORY_LIMIT) history = history.slice(-HISTORY_LIMIT);
-}
-
-server.on("upgrade", (req, socket, head) => {
-  if (req.url !== "/ws") return socket.destroy();
-  wss.handleUpgrade(req, socket, head, (ws) => wss.emit("connection", ws, req));
-});
-
-wss.on("connection", (ws) => {
-  ws.isAlive = true;
-  clients.add(ws);
-
-  // send hello + history
-  ws.send(JSON.stringify({ type: "hello", payload: { serverTime: Date.now() } }));
-  if (history.length) ws.send(JSON.stringify({ type: "history", payload: history }));
-
-  ws.on("pong", () => (ws.isAlive = true));
-
-  ws.on("message", (buf) => {
-    let msg;
-    try { msg = JSON.parse(buf.toString()); } catch { return; }
-    // Expected shapes:
-    // {type:"message", payload:{id,user,text,ts}}
-    // {type:"typing", payload:{user}}
-    if (msg?.type === "message" && msg.payload?.text) {
-      const clean = {
-        id: String(msg.payload.id || Date.now()),
-        user: String(msg.payload.user || "Guest").slice(0, 32),
-        text: String(msg.payload.text).slice(0, 2000),
-        ts: Number(msg.payload.ts || Date.now())
-      };
-      const evt = { type: "message", payload: clean };
-      addToHistory(evt);
-      broadcast(evt); // to all
-    } else if (msg?.type === "typing") {
-      broadcast({ type: "typing", payload: { user: String(msg.payload?.user || "Guest").slice(0, 32) } }, ws);
-    }
+  socket.on("message", (m) => {
+    if (!m || typeof m.text !== "string") return;
+    const msg = {
+      id: String(m.id || Date.now()),
+      user: String(m.user || "Guest").slice(0, 32),
+      text: m.text.slice(0, 2000),
+      ts: Number(m.ts || Date.now()),
+    };
+    history.push(msg);
+    if (history.length > HISTORY_LIMIT) history = history.slice(-HISTORY_LIMIT);
+    io.emit("message", msg); // broadcast to everyone (including sender)
   });
 
-  ws.on("close", () => {
-    clients.delete(ws);
+  socket.on("typing", (u) => {
+    const user = String((u && u.user) || "Guest").slice(0, 32);
+    socket.broadcast.emit("typing", { user });
+  });
+
+  socket.on("disconnect", () => {
+    console.log("client disconnected:", socket.id);
   });
 });
 
-// Heartbeat (keep connections fresh)
-setInterval(() => {
-  for (const ws of clients) {
-    if (!ws.isAlive) return ws.terminate();
-    ws.isAlive = false;
-    ws.ping();
-  }
-}, 30000);
+/* SPA fallback — IMPORTANT: do NOT match /socket.io/* */
+app.get(/^\/(?!socket\.io\/).*/, (req, res) => {
+  res.sendFile(path.join(__dirname, "public", "index.html"));
+});
 
 server.listen(PORT, () => {
-  console.log(`Server running on http://localhost:${PORT}`);
-  console.log(`WebSocket at ws://localhost:${PORT}/ws`);
+  console.log(`Server listening on http://localhost:${PORT}`);
 });
