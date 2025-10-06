@@ -70,7 +70,7 @@
     .sheen-stripe::before {
       content:""; position:absolute; top:0; bottom:0; width:35%;
       background: linear-gradient(90deg, transparent, rgba(255,255,255,.12), transparent);
-      transform: skewX(-12deg); animation: sheen 3.2s linear infinite;
+      transform: skewX(-12deg); animation: sheen 3.2s ease-in-out infinite;
     }
     .msg-bubble.me::after, .msg-bubble.them::after {
       content:""; position:absolute; bottom:-2px; width:14px; height:14px; filter: blur(.2px);
@@ -100,7 +100,7 @@
         </div>
       </div>
 
-      <!-- connection status -->
+      <!-- status -->
       <div class="flex items-center gap-2">
         <div id="statusBadge" class="px-2 py-1 rounded-full text-xs bg-gray-600/40 ring-1 ring-white/10">Connecting…</div>
         <button id="btnTheme" class="px-3 py-1.5 rounded-xl bg-gradient-to-r from-neo/80 to-gleam/70 hover:from-neo hover:to-gleam text-black font-medium shadow-glowNeo transition text-sm">Theme</button>
@@ -126,17 +126,17 @@
           <label class="block text-xs text-gray-400 mb-1">Your display name</label>
           <div class="flex items-center gap-2">
             <input id="nameInput" class="w-full px-3 py-2 rounded-xl bg-baseDeep/80 ring-1 ring-white/10 outline-none focus:ring-neo/40 placeholder:text-gray-500" placeholder="e.g. GraceWalker" />
-            <button id="saveName" class="px-3 py-2 rounded-xl bg-gleam/20 hover:bg-gleam/30 ring-1 ring-gleam/40 text-gleam text-sm">Save</button>
+            <button id="saveName" class="px-3 py-2 rounded-xl bg-gleam/20 hover:bg-gleam/30 ring-1 ring-gleam/40 text-gleam text-sm" type="button">Save</button>
           </div>
         </div>
 
         <div class="pt-2">
           <h3 class="text-sm text-gray-300 mb-2">Quick blessings</h3>
           <div class="flex flex-wrap gap-2">
-            <button data-bless="Peace be with you!" class="chip">Peace ✌️</button>
-            <button data-bless="God bless and keep you." class="chip">Blessings ✨</button>
-            <button data-bless="Praying for you." class="chip">Prayer 🙏</button>
-            <button data-bless="Amen!" class="chip">Amen 🙌</button>
+            <button data-bless="Peace be with you!" class="chip" type="button">Peace ✌️</button>
+            <button data-bless="God bless and keep you." class="chip" type="button">Blessings ✨</button>
+            <button data-bless="Praying for you." class="chip" type="button">Prayer 🙏</button>
+            <button data-bless="Amen!" class="chip" type="button">Amen 🙌</button>
           </div>
         </div>
       </div>
@@ -155,13 +155,14 @@
         </span>
       </div>
 
-      <form id="composer" class="relative z-10 p-3 sm:p-4 pt-2 border-t border-white/10">
+      <!-- Important: prevent page reload -->
+      <form id="composer" onsubmit="return false" autocomplete="off" novalidate class="relative z-10 p-3 sm:p-4 pt-2 border-t border-white/10">
         <div class="flex items-end gap-2">
           <textarea id="input" rows="1" placeholder="Type a message to encourage…"
             class="flex-1 resize-none px-4 py-3 rounded-2xl bg-baseDeep/80 ring-1 ring-white/10 outline-none
                    focus:ring-2 focus:ring-neo/40 placeholder:text-gray-500 transition"></textarea>
 
-          <button id="sendBtn" type="submit"
+          <button id="sendBtn" type="button"
             class="relative overflow-hidden px-4 py-3 rounded-2xl font-semibold text-base text-black
                    bg-gradient-to-r from-neo/90 to-gleam/90 hover:from-neo hover:to-gleam
                    shadow-glowNeo active:translate-y-[1px] transition">
@@ -182,47 +183,30 @@
     .msg-them { @apply mr-auto; }
   </style>
 
-  <!-- Prefer the server-served client (matches server version) -->
+  <!-- Socket.IO client served by our server -->
   <script src="/socket.io/socket.io.js"></script>
-  <!-- Fallback to CDN if the above ever fails (e.g., misrouted) -->
-  <script>
-    if (typeof io === 'undefined') {
-      document.write('<script src="https://cdn.socket.io/4.8.1/socket.io.min.js"><\/script>');
-    }
-  </script>
+  <!-- CDN fallback if above fails -->
+  <script>if(typeof io==='undefined'){document.write('<script src="https://cdn.socket.io/4.8.1/socket.io.min.js"><\\/script>');}</script>
 
-  <!-- Client logic -->
+  <!-- App -->
   <script>
-    const NAME_KEY = 'christchat:name';
-    const verses = [
-      {t:"The LORD is my shepherd; I shall not want.", r:"Psalm 23:1"},
-      {t:"Cast all your anxiety on Him because He cares for you.", r:"1 Peter 5:7"},
-      {t:"Let all that you do be done in love.", r:"1 Corinthians 16:14"},
-      {t:"Be strong and courageous… the LORD your God is with you.", r:"Joshua 1:9"},
-      {t:"Rejoice in hope, be patient in tribulation, be constant in prayer.", r:"Romans 12:12"},
-      {t:"The light shines in the darkness…", r:"John 1:5"},
-    ];
-    const verseBar = document.getElementById('verseBar');
-    function setRandomVerse() {
-      const v = verses[Math.floor(Math.random()*verses.length)];
-      verseBar.textContent = `“${v.t}” — ${v.r}`;
-    }
-    setRandomVerse();
-
-    const $ = (s)=>document.querySelector(s);
+    // Elements
+    const $ = s => document.querySelector(s);
     const messagesEl = $('#messages');
     const inputEl = $('#input');
-    const formEl = $('#composer');
+    const sendBtn = $('#sendBtn');
     const typingEl = $('#typing');
+    const statusBadge = $('#statusBadge');
     const nameInput = $('#nameInput');
     const saveName = $('#saveName');
     const btnTheme = $('#btnTheme');
-    const sendBtn = $('#sendBtn');
-    const statusBadge = $('#statusBadge');
 
+    // State
+    const NAME_KEY = 'christchat:name';
     let displayName = localStorage.getItem(NAME_KEY) || 'Guest';
     nameInput.value = displayName;
 
+    // Status helper
     function setStatus(text, cls) {
       statusBadge.textContent = text;
       statusBadge.className = "px-2 py-1 rounded-full text-xs ring-1 " + cls;
@@ -238,21 +222,31 @@
     saveName.addEventListener('click', () => {
       displayName = nameInput.value.trim() || 'Guest';
       localStorage.setItem(NAME_KEY, displayName);
-      statusBadge.animate([{filter:'brightness(1.2)'},{filter:'brightness(1)'}], {duration:350});
+      statusBadge.animate([{filter:'brightness(1.2)'},{filter:'brightness(1)'}], {duration:300});
     });
 
-    // Deduplicate by id (prevents double-render from optimistic + server echo)
-    const seen = new Set();
+    // Socket.IO
+    const socket = io({ path: "/socket.io", transports: ["websocket", "polling"] });
 
+    socket.on("connect", () => setStatus("Connected", "bg-gleam/20 text-gleam ring-gleam/40"));
+    socket.on("connect_error", () => setStatus("Retrying…", "bg-yellow-400/20 text-yellow-300 ring-yellow-400/40"));
+    socket.on("reconnect_attempt", () => setStatus("Retrying…", "bg-yellow-400/20 text-yellow-300 ring-yellow-400/40"));
+    socket.on("disconnect", () => setStatus("Disconnected", "bg-red-400/20 text-red-300 ring-red-400/40"));
+
+    socket.on("history", (arr) => {
+      messagesEl.innerHTML = '';
+      (arr || []).forEach(renderMessage);
+    });
+    socket.on("typing", () => showTypingHint());
+    socket.on("message", (m) => renderMessage(m));
+
+    // UI helpers
     function fmtTime(ts) {
       const d = new Date(ts);
       return d.toLocaleTimeString([], {hour:'2-digit', minute:'2-digit'});
     }
-    function renderMessage(m, smooth=true) {
-      if (!m || seen.has(m.id)) return;
-      seen.add(m.id);
-
-      const isMe = (m.user === displayName && !!displayName);
+    function renderMessage(m) {
+      const isMe = (m.user === displayName);
       const wrap = document.createElement('div');
       wrap.className = `msg ${isMe ? 'msg-me' : 'msg-them'}`;
 
@@ -276,58 +270,46 @@
       bubble.appendChild(meta);
       wrap.appendChild(bubble);
       messagesEl.appendChild(wrap);
-      messagesEl.scrollTo({ top: messagesEl.scrollHeight + 9999, behavior: smooth ? 'smooth' : 'auto' });
+      messagesEl.scrollTo({ top: messagesEl.scrollHeight + 9999, behavior: 'smooth' });
     }
 
     let typingTimer = null;
     function showTypingHint() {
       typingEl.classList.remove('hidden');
-      if (typingTimer) clearTimeout(typingTimer);
+      clearTimeout(typingTimer);
       typingTimer = setTimeout(() => typingEl.classList.add('hidden'), 1200);
     }
 
-    // Socket.IO — explicit path matches server
-    const socket = io({ path: "/socket.io", transports: ["websocket", "polling"] });
-
-    socket.on("connect", () => setStatus("Connected", "bg-gleam/20 text-gleam ring-gleam/40"));
-    socket.on("connect_error", (err) => setStatus("Retrying…", "bg-yellow-400/20 text-yellow-300 ring-yellow-400/40"));
-    socket.on("reconnect_attempt", () => setStatus("Retrying…", "bg-yellow-400/20 text-yellow-300 ring-yellow-400/40"));
-    socket.on("disconnect", () => setStatus("Disconnected", "bg-red-400/20 text-red-300 ring-red-400/40"));
-
-    socket.on("hello", () => {});
-    socket.on("history", (arr) => {
-      messagesEl.innerHTML = '';
-      seen.clear();
-      (arr || []).forEach(evt => renderMessage(evt, false));
-    });
-    socket.on("typing", () => showTypingHint());
-    socket.on("message", (m) => renderMessage(m, true));
-
-    // Send
-    formEl.addEventListener('submit', (e) => {
-      e.preventDefault();
+    // Send handlers (no page reload)
+    function sendCurrentMessage() {
       const text = inputEl.value.trim();
       if (!text) return;
       const m = {
         id: (crypto.randomUUID && crypto.randomUUID()) || String(Date.now()) + Math.random(),
-        user: displayName || 'Guest',
+        user: displayName,
         text,
         ts: Date.now()
       };
-      // optimistic render so you ALWAYS see your message immediately
-      renderMessage(m, true);
-      // then send to server for broadcast
       socket.emit("message", m);
       inputEl.value = "";
       autoGrow(inputEl);
       inputEl.focus();
+    }
+    sendBtn.addEventListener('click', sendCurrentMessage);
+
+    // Enter to send (Shift+Enter = newline)
+    inputEl.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter' && !e.shiftKey) {
+        e.preventDefault();
+        sendCurrentMessage();
+      }
     });
 
-    // typing + autogrow
+    // Typing + autogrow
     let lastType = 0;
     inputEl.addEventListener('input', () => {
       const now = Date.now();
-      if (now - lastType > 500) { socket.emit("typing", { user: displayName || "Guest" }); lastType = now; }
+      if (now - lastType > 500) { socket.emit("typing", { user: displayName }); lastType = now; }
       autoGrow(inputEl);
     });
     function autoGrow(el) {
@@ -335,12 +317,19 @@
       el.style.height = Math.min(el.scrollHeight, 160) + 'px';
     }
 
-    // sheen follows pointer
-    const sendBtn = document.getElementById('sendBtn');
+    // button sheen
     sendBtn.addEventListener('pointermove', e => {
       const r = sendBtn.getBoundingClientRect();
       const x = ((e.clientX - r.left) / r.width) * 100;
       sendBtn.style.setProperty('--x', x + '%');
+    });
+
+    // Quick blessings
+    document.querySelectorAll('[data-bless]').forEach(b => {
+      b.addEventListener('click', () => {
+        inputEl.value = b.getAttribute('data-bless');
+        sendCurrentMessage();
+      });
     });
   </script>
 </body>
