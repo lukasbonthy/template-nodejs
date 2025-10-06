@@ -12,29 +12,27 @@ const __dirname = path.dirname(__filename);
 const app = express();
 const server = http.createServer(app);
 const io = new SocketIO(server, {
-  // Explicit path to avoid surprises; the client will match this.
   path: "/socket.io",
   cors: { origin: true, credentials: true }
 });
 
 const PORT = process.env.PORT || 3000;
 
-/* Security + perf (keep CSP off since we use CDN + inline scripts) */
-app.use(helmet({ contentSecurityPolicy: false }));
+/* Security + perf */
+app.use(helmet({ contentSecurityPolicy: false })); // allow CDN + inline scripts
 app.use(compression());
 
-/* Static files */
+/* Static */
 app.use(express.static(path.join(__dirname, "public"), { extensions: ["html"] }));
 
-/* In-memory message store */
+/* In-memory message history */
 const HISTORY_LIMIT = 300;
-let history = []; // [{id,user,text,ts}]
+let history = []; // array of {id,user,text,ts}
 
-/* Socket.IO messaging */
+/* Socket.IO */
 io.on("connection", (socket) => {
-  console.log("client connected:", socket.id);
+  console.log("✅ client connected:", socket.id);
 
-  // send hello + history to the new client
   socket.emit("hello", { serverTime: Date.now() });
   if (history.length) socket.emit("history", history);
 
@@ -44,11 +42,11 @@ io.on("connection", (socket) => {
       id: String(m.id || Date.now()),
       user: String(m.user || "Guest").slice(0, 32),
       text: m.text.slice(0, 2000),
-      ts: Number(m.ts || Date.now()),
+      ts: Number(m.ts || Date.now())
     };
     history.push(msg);
     if (history.length > HISTORY_LIMIT) history = history.slice(-HISTORY_LIMIT);
-    io.emit("message", msg); // broadcast to everyone (including sender)
+    io.emit("message", msg); // to everyone (sender included)
   });
 
   socket.on("typing", (u) => {
@@ -56,16 +54,16 @@ io.on("connection", (socket) => {
     socket.broadcast.emit("typing", { user });
   });
 
-  socket.on("disconnect", () => {
-    console.log("client disconnected:", socket.id);
+  socket.on("disconnect", (r) => {
+    console.log("❌ client disconnected:", socket.id, r);
   });
 });
 
-/* SPA fallback — IMPORTANT: do NOT match /socket.io/* */
+/* SPA fallback — exclude /socket.io/* so the client bundle never gets index.html */
 app.get(/^\/(?!socket\.io\/).*/, (req, res) => {
   res.sendFile(path.join(__dirname, "public", "index.html"));
 });
 
 server.listen(PORT, () => {
-  console.log(`Server listening on http://localhost:${PORT}`);
+  console.log(`🚀 Server listening on http://localhost:${PORT}`);
 });
