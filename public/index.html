@@ -24,7 +24,6 @@
             glowNeo: '0 0 24px rgba(167,139,250,.25)',
             glowEmerald: '0 0 24px rgba(52,211,153,.18)'
           },
-          backdropBlur: { xs: '2px' },
           keyframes: {
             fadeIn: { '0%': {opacity:0, transform:'translateY(8px)'}, '100%': {opacity:1, transform:'translateY(0)'} },
             pulseSoft: { '0%,100%': {opacity:.8}, '50%': {opacity:1} },
@@ -56,8 +55,8 @@
       background:
         linear-gradient(180deg, rgba(255,255,255,.06), rgba(255,255,255,.02)) border-box,
         linear-gradient(160deg, rgba(167,139,250,.45), rgba(52,211,153,.35)) padding-box;
-      backdrop-filter: blur(6px) saturate(120%);
-      -webkit-backdrop-filter: blur(6px) saturate(120%);
+      backdrop-filter: blur(8px) saturate(120%);
+      -webkit-backdrop-filter: blur(8px) saturate(120%);
     }
     .shiny { position: relative; overflow: hidden; }
     .shiny:after {
@@ -72,14 +71,38 @@
       background: linear-gradient(90deg, transparent, rgba(255,255,255,.12), transparent);
       transform: skewX(-12deg); animation: sheen 3.2s ease-in-out infinite;
     }
-    .msg-bubble.me::after, .msg-bubble.them::after {
-      content:""; position:absolute; bottom:-2px; width:14px; height:14px; filter: blur(.2px);
-    }
-    .msg-bubble.me::after { right:10px; background: radial-gradient(14px at 100% 50%, rgba(52,211,153,.35), transparent 70%); }
-    .msg-bubble.them::after { left:10px; background: radial-gradient(14px at 0% 50%, rgba(167,139,250,.35), transparent 70%); }
     @media (prefers-reduced-motion: reduce) {
       .shiny:after, .sheen-stripe::before, [class*="animate-"] { animation: none !important; }
     }
+
+    /* gradient-border bubble wrapper */
+    .bubble-wrap { position: relative; border-radius: 18px; }
+    .bubble-wrap::before {
+      content:""; position:absolute; inset:0; border-radius:18px; padding:1px;
+      background: linear-gradient(135deg, rgba(167,139,250,.45), rgba(52,211,153,.35));
+      -webkit-mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0);
+      -webkit-mask-composite: xor; mask-composite: exclude;
+    }
+
+    /* avatar ring */
+    .ring-grad {
+      position: relative;
+    }
+    .ring-grad::after {
+      content:""; position:absolute; inset:-2px; border-radius:9999px;
+      background: conic-gradient(from 180deg, rgba(167,139,250,.6), rgba(52,211,153,.6), rgba(167,139,250,.6));
+      filter: blur(6px); opacity:.35;
+      z-index:-1;
+    }
+
+    /* pressable motion */
+    .pressable {
+      transition: transform .18s ease, box-shadow .18s ease, filter .18s ease;
+      transform: translateY(0) translateZ(0);
+      will-change: transform, filter;
+    }
+    .pressable:hover { transform: translateY(-1px) scale(1.02); filter: saturate(1.1); }
+    .pressable:active { transform: translateY(0) scale(0.98); filter: brightness(.95); }
   </style>
 </head>
 <body class="min-h-screen text-gray-200 selection:bg-neo/30 selection:text-white">
@@ -87,7 +110,7 @@
   <header class="glass shiny shadow-glowNeo border border-white/10 rounded-b-2xl px-4 sm:px-6 py-3 sticky top-0 z-50">
     <div class="relative z-10 flex items-center justify-between gap-3">
       <div class="flex items-center gap-3">
-        <div class="grid place-items-center size-10 rounded-xl bg-purpleHud/60 ring-1 ring-white/10 shadow-glowNeo">
+        <div class="grid place-items-center w-10 h-10 rounded-xl bg-purpleHud/60 ring-1 ring-white/10 shadow-glowNeo pressable">
           <svg width="20" height="20" viewBox="0 0 24 24" class="text-neo">
             <path fill="currentColor" d="M10 2h4v6h6v4h-6v10h-4V12H4V8h6z"/>
           </svg>
@@ -103,7 +126,7 @@
       <!-- status -->
       <div class="flex items-center gap-2">
         <div id="statusBadge" class="px-2 py-1 rounded-full text-xs bg-gray-600/40 ring-1 ring-white/10">Connecting…</div>
-        <button id="btnTheme" class="px-3 py-1.5 rounded-xl bg-gradient-to-r from-neo/80 to-gleam/70 hover:from-neo hover:to-gleam text-black font-medium shadow-glowNeo transition text-sm">Theme</button>
+        <button id="btnTheme" class="pressable px-3 py-1.5 rounded-xl bg-gradient-to-r from-neo/80 to-gleam/70 text-black font-medium shadow-glowNeo">Theme</button>
       </div>
     </div>
     <div class="sheen-stripe"></div>
@@ -115,28 +138,40 @@
     <aside class="glass shiny border border-white/10 rounded-2xl p-4 md:sticky md:top-[90px] h-max shadow-glowNeo">
       <div class="relative z-10 space-y-4">
         <h2 class="font-semibold text-gray-100 flex items-center gap-2">
-          <span class="size-2 rounded-full bg-gleam animate-pulse-soft shadow-[0_0_12px_rgba(52,211,153,.65)]"></span>
+          <span class="w-2 h-2 rounded-full bg-gleam animate-pulse-soft shadow-[0_0_12px_rgba(52,211,153,.65)]"></span>
           Realtime Room (Express + Socket.IO)
         </h2>
-        <div class="text-xs text-gray-400">
+        <p class="text-xs text-gray-400">
           Messages broadcast to all connected clients. Ephemeral memory (no DB).
-        </div>
+        </p>
 
-        <div class="pt-1">
+        <div>
           <label class="block text-xs text-gray-400 mb-1">Your display name</label>
           <div class="flex items-center gap-2">
-            <input id="nameInput" class="w-full px-3 py-2 rounded-xl bg-baseDeep/80 ring-1 ring-white/10 outline-none focus:ring-neo/40 placeholder:text-gray-500" placeholder="e.g. GraceWalker" />
-            <button id="saveName" class="px-3 py-2 rounded-xl bg-gleam/20 hover:bg-gleam/30 ring-1 ring-gleam/40 text-gleam text-sm" type="button">Save</button>
+            <input id="nameInput"
+                   class="w-full px-3 py-2 rounded-xl bg-baseDeep/80 ring-1 ring-white/10 outline-none focus:ring-neo/40 placeholder:text-gray-500"
+                   placeholder="e.g. GraceWalker" />
+            <button id="saveName"
+                    class="pressable px-3 py-2 rounded-xl bg-gleam/20 hover:bg-gleam/30 ring-1 ring-gleam/40 text-gleam text-sm"
+                    type="button">Save</button>
           </div>
         </div>
 
-        <div class="pt-2">
+        <div>
           <h3 class="text-sm text-gray-300 mb-2">Quick blessings</h3>
           <div class="flex flex-wrap gap-2">
-            <button data-bless="Peace be with you!" class="chip" type="button">Peace ✌️</button>
-            <button data-bless="God bless and keep you." class="chip" type="button">Blessings ✨</button>
-            <button data-bless="Praying for you." class="chip" type="button">Prayer 🙏</button>
-            <button data-bless="Amen!" class="chip" type="button">Amen 🙌</button>
+            <button data-bless="Peace be with you!"
+              class="pressable px-3 py-1.5 text-xs rounded-xl bg-baseDeep/70 hover:bg-baseDeep/60 ring-1 ring-white/10 text-gray-300"
+              type="button">Peace ✌️</button>
+            <button data-bless="God bless and keep you."
+              class="pressable px-3 py-1.5 text-xs rounded-xl bg-baseDeep/70 hover:bg-baseDeep/60 ring-1 ring-white/10 text-gray-300"
+              type="button">Blessings ✨</button>
+            <button data-bless="Praying for you."
+              class="pressable px-3 py-1.5 text-xs rounded-xl bg-baseDeep/70 hover:bg-baseDeep/60 ring-1 ring-white/10 text-gray-300"
+              type="button">Prayer 🙏</button>
+            <button data-bless="Amen!"
+              class="pressable px-3 py-1.5 text-xs rounded-xl bg-baseDeep/70 hover:bg-baseDeep/60 ring-1 ring-white/10 text-gray-300"
+              type="button">Amen 🙌</button>
           </div>
         </div>
       </div>
@@ -144,48 +179,43 @@
 
     <!-- CHAT -->
     <section class="glass shiny border border-white/10 rounded-2xl shadow-glowNeo min-h-[60vh] flex flex-col">
-      <div id="messages" class="relative z-10 flex-1 overflow-y-auto p-4 sm:p-6 space-y-3"></div>
+      <div id="messages" class="relative z-10 flex-1 overflow-y-auto p-4 sm:p-6 space-y-4"></div>
 
       <div id="typing" class="px-4 pb-1 text-xs text-gray-400 hidden">
         Someone is typing
         <span class="inline-flex gap-1 ml-1 align-middle">
-          <span class="size-1.5 rounded-full bg-gray-400/70 animate-dot1"></span>
-          <span class="size-1.5 rounded-full bg-gray-400/70 animate-dot2"></span>
-          <span class="size-1.5 rounded-full bg-gray-400/70 animate-dot3"></span>
+          <span class="w-1.5 h-1.5 rounded-full bg-gray-400/70 animate-dot1"></span>
+          <span class="w-1.5 h-1.5 rounded-full bg-gray-400/70 animate-dot2"></span>
+          <span class="w-1.5 h-1.5 rounded-full bg-gray-400/70 animate-dot3"></span>
         </span>
       </div>
 
       <!-- prevent page reload -->
-      <form id="composer" onsubmit="return false" autocomplete="off" novalidate class="relative z-10 p-3 sm:p-4 pt-2 border-t border-white/10">
+      <form id="composer" onsubmit="return false" autocomplete="off" novalidate
+            class="relative z-10 p-3 sm:p-4 pt-2 border-t border-white/10">
         <div class="flex items-end gap-2">
           <textarea id="input" rows="1" placeholder="Type a message to encourage…"
             class="flex-1 resize-none px-4 py-3 rounded-2xl bg-baseDeep/80 ring-1 ring-white/10 outline-none
                    focus:ring-2 focus:ring-neo/40 placeholder:text-gray-500 transition"></textarea>
 
           <button id="sendBtn" type="button"
-            class="relative overflow-hidden px-4 py-3 rounded-2xl font-semibold text-base text-black
-                   bg-gradient-to-r from-neo/90 to-gleam/90 hover:from-neo hover:to-gleam
-                   shadow-glowNeo active:translate-y-[1px] transition">
+            class="group pressable relative overflow-hidden px-4 py-3 rounded-2xl font-semibold text-base text-black
+                   bg-gradient-to-r from-neo/90 to-gleam/90 shadow-glowNeo">
             <span class="relative z-10">Send</span>
-            <span class="absolute inset-0 opacity-30 pointer-events-none bg-[radial-gradient(120px_60px_at_var(--x,50%)_-30%,white,transparent_60%)]"></span>
+            <span class="absolute inset-0 opacity-30 pointer-events-none
+                         bg-[radial-gradient(120px_60px_at_var(--x,50%)_-30%,white,transparent_60%)]"></span>
           </button>
         </div>
       </form>
     </section>
   </main>
 
-  <style>
-    .chip { @apply px-3 py-1.5 text-xs rounded-xl bg-baseDeep/70 hover:bg-baseDeep/60 ring-1 ring-white/10 text-gray-300 transition; }
-    .msg-bubble { @apply relative max-w-[85%] md:max-w-[70%] px-4 py-3 rounded-2xl ring-1 backdrop-blur-xs shadow-glowNeo animate-fade-in; }
-    .msg-meta { @apply mt-1 text-[10px] uppercase tracking-wide text-gray-400; }
-    .msg-me { @apply ml-auto; }
-    .msg-them { @apply mr-auto; }
-  </style>
-
-  <!-- Socket.IO client (served by our server) -->
+  <!-- Socket.IO client -->
   <script src="/socket.io/socket.io.js"></script>
 
+  <!-- App -->
   <script>
+    // Elements
     const $ = s => document.querySelector(s);
     const messagesEl = $('#messages');
     const inputEl = $('#input');
@@ -205,6 +235,7 @@
       statusBadge.className = "px-2 py-1 rounded-full text-xs ring-1 " + cls;
     }
 
+    // Theme toggle
     let dark = true;
     btnTheme.addEventListener('click', () => {
       dark = !dark;
@@ -216,12 +247,82 @@
       localStorage.setItem(NAME_KEY, displayName);
     });
 
-    // 🔧 KEY CHANGE: force long-polling and disable upgrade to WebSocket
+    // Render helpers
+    const seen = new Set(); // de-dupe by id
+    const initials = (name) => (name || 'Guest').trim().split(/\s+/).map(s=>s[0]).slice(0,2).join('').toUpperCase();
+    const colorFromName = (name) => {
+      // compute pastel hsl based on hash of name
+      let h = 0; for (let i=0; i<name.length; i++) h = (h*31 + name.charCodeAt(i)) % 360;
+      return `hsl(${h} 70% 35%)`;
+    };
+    const timeStr = (ts)=> new Date(ts).toLocaleTimeString([], {hour:'2-digit', minute:'2-digit'});
+
+    function messageRow(m, isMe){
+      const row = document.createElement('div');
+      row.className = `flex items-end gap-3 ${isMe ? 'justify-end' : 'justify-start'}`;
+
+      // avatar (hide on my messages for cleaner look)
+      if (!isMe) {
+        const av = document.createElement('div');
+        av.className = 'ring-grad flex items-center justify-center w-9 h-9 rounded-full text-xs font-semibold text-white/90';
+        av.style.background = colorFromName(m.user || 'Guest');
+        av.textContent = initials(m.user || 'Guest');
+        row.appendChild(av);
+      } else {
+        // spacer to align bubbles
+        const spacer = document.createElement('div');
+        spacer.className = 'w-9 h-9';
+        row.appendChild(spacer);
+      }
+
+      // bubble wrapper w/ gradient border
+      const wrap = document.createElement('div');
+      wrap.className = 'bubble-wrap max-w-[80%] sm:max-w-[70%]';
+
+      // bubble itself
+      const bubble = document.createElement('div');
+      bubble.className =
+        'relative rounded-[16px] px-4 py-3 text-sm leading-relaxed shadow-glowNeo animate-fade-in ' +
+        (isMe
+          ? 'bg-gradient-to-br from-emerald-900/50 to-deepGreen/60 ring-1 ring-gleam/20 text-gray-100'
+          : 'bg-gradient-to-br from-purpleHud/70 to-base/40 ring-1 ring-neo/25 text-gray-100');
+
+      const txt = document.createElement('div');
+      txt.textContent = m.text;
+
+      const meta = document.createElement('div');
+      meta.className = 'mt-1 text-[10px] uppercase tracking-wide text-gray-400';
+      meta.textContent = timeStr(m.ts);
+
+      bubble.appendChild(txt);
+      bubble.appendChild(meta);
+      wrap.appendChild(bubble);
+      row.appendChild(wrap);
+      return row;
+    }
+
+    function renderMessage(m, smooth=true){
+      if (!m || seen.has(m.id)) return;
+      seen.add(m.id);
+      const isMe = (m.user === displayName);
+      const node = messageRow(m, isMe);
+      messagesEl.appendChild(node);
+      messagesEl.scrollTo({ top: messagesEl.scrollHeight + 9999, behavior: smooth ? 'smooth' : 'auto' });
+    }
+
+    // Typing UI
+    let typingTimer = null;
+    function showTypingHint(){
+      typingEl.classList.remove('hidden');
+      clearTimeout(typingTimer);
+      typingTimer = setTimeout(() => typingEl.classList.add('hidden'), 1200);
+    }
+
+    // Socket.IO (Render friendly: polling only)
     const socket = io({
       path: "/socket.io",
       transports: ["polling"],
-      upgrade: false,
-      withCredentials: false
+      upgrade: false
     });
 
     socket.on("connect", () => setStatus("Connected (polling)", "bg-gleam/20 text-gleam ring-gleam/40"));
@@ -229,63 +330,60 @@
     socket.on("reconnect_attempt", () => setStatus("Retrying…", "bg-yellow-400/20 text-yellow-300 ring-yellow-400/40"));
     socket.on("disconnect", () => setStatus("Disconnected", "bg-red-400/20 text-red-300 ring-red-400/40"));
 
-    socket.on("history", (arr) => { messagesEl.innerHTML = ''; (arr||[]).forEach(renderMessage); });
-    socket.on("typing", () => showTypingHint());
-    socket.on("message", (m) => renderMessage(m));
+    socket.on("history", (arr) => { messagesEl.innerHTML = ''; seen.clear(); (arr||[]).forEach(m => renderMessage(m,false)); });
+    socket.on("typing", showTypingHint);
+    socket.on("message", (m) => renderMessage(m, true));
 
-    function fmtTime(ts){ const d=new Date(ts); return d.toLocaleTimeString([], {hour:'2-digit', minute:'2-digit'}); }
-    function renderMessage(m){
-      const isMe = (m.user === displayName);
-      const wrap = document.createElement('div');
-      wrap.className = `msg ${isMe ? 'msg-me' : 'msg-them'}`;
-
-      const bubble = document.createElement('div');
-      bubble.className = `msg-bubble ${isMe ? 'me' : 'them'} ${isMe ? 'bg-deepGreen/70 ring-gleam/20' : 'bg-purpleHud/70 ring-neo/20'}`;
-
-      const who = document.createElement('div');
-      who.className = 'text-xs text-gray-300/80 mb-1';
-      who.textContent = m.user || 'Guest';
-
-      const body = document.createElement('div');
-      body.className = 'leading-relaxed';
-      body.textContent = m.text;
-
-      const meta = document.createElement('div');
-      meta.className = 'msg-meta';
-      meta.textContent = fmtTime(m.ts);
-
-      if (!isMe) bubble.appendChild(who);
-      bubble.appendChild(body); bubble.appendChild(meta);
-      wrap.appendChild(bubble); messagesEl.appendChild(wrap);
-      messagesEl.scrollTo({ top: messagesEl.scrollHeight + 9999, behavior: 'smooth' });
-    }
-
-    let typingTimer=null;
-    function showTypingHint(){ typingEl.classList.remove('hidden'); clearTimeout(typingTimer); typingTimer=setTimeout(()=>typingEl.classList.add('hidden'),1200); }
-
+    // Compose & send (no reload)
+    function autoGrow(el){ el.style.height='auto'; el.style.height=Math.min(el.scrollHeight,160)+'px'; }
     function sendCurrentMessage(){
       const text = inputEl.value.trim();
-      if(!text) return;
-      const m = { id: (crypto.randomUUID&&crypto.randomUUID())||String(Date.now())+Math.random(), user: displayName, text, ts: Date.now() };
+      if (!text) return;
+      const m = {
+        id: (crypto.randomUUID && crypto.randomUUID()) || String(Date.now()) + Math.random(),
+        user: displayName,
+        text,
+        ts: Date.now()
+      };
+      // optimistic + send
+      renderMessage(m, true);
       socket.emit("message", m);
-      inputEl.value=""; autoGrow(inputEl); inputEl.focus();
+      inputEl.value = ""; autoGrow(inputEl); inputEl.focus();
     }
 
     sendBtn.addEventListener('click', sendCurrentMessage);
-    inputEl.addEventListener('keydown', (e)=>{ if(e.key==='Enter' && !e.shiftKey){ e.preventDefault(); sendCurrentMessage(); } });
+    inputEl.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); sendCurrentMessage(); }
+    });
 
     let lastType=0;
     inputEl.addEventListener('input', ()=>{
       const now = Date.now(); if(now-lastType>500){ socket.emit("typing",{user:displayName}); lastType=now; }
       autoGrow(inputEl);
     });
-    function autoGrow(el){ el.style.height='auto'; el.style.height=Math.min(el.scrollHeight,160)+'px'; }
 
-    // button sheen
+    // Button sheen follows pointer
     sendBtn.addEventListener('pointermove', e => {
       const r = sendBtn.getBoundingClientRect();
       const x = ((e.clientX - r.left) / r.width) * 100;
       sendBtn.style.setProperty('--x', x + '%');
+    });
+
+    // ✅ Quick blessings — now wired up
+    document.querySelectorAll('[data-bless]').forEach(btn => {
+      btn.addEventListener('click', () => {
+        const text = btn.getAttribute('data-bless');
+        const m = {
+          id: (crypto.randomUUID && crypto.randomUUID()) || String(Date.now()) + Math.random(),
+          user: displayName,
+          text,
+          ts: Date.now()
+        };
+        // tiny pop feedback
+        btn.animate([{transform:'translateY(-1px) scale(1.04)'},{transform:'translateY(0) scale(1)'}], {duration:180, easing:'ease-out'});
+        renderMessage(m, true);
+        socket.emit('message', m);
+      });
     });
   </script>
 </body>
