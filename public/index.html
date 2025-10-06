@@ -94,4 +94,246 @@
         </div>
         <div>
           <h1 class="text-lg font-semibold tracking-wide">Light & Fellowship</h1>
-          <p id
+          <p id="verseBar" class="text-xs text-gray-400">
+            “The light shines in the darkness, and the darkness has not overcome it.” — John 1:5
+          </p>
+        </div>
+      </div>
+      <div class="flex items-center gap-2">
+        <button id="btnName" class="px-3 py-1.5 rounded-xl bg-deepGreen/60 hover:bg-deepGreen/80 ring-1 ring-white/10 shadow-glowEmerald transition text-sm">Set Name</button>
+        <button id="btnTheme" class="px-3 py-1.5 rounded-xl bg-gradient-to-r from-neo/80 to-gleam/70 hover:from-neo hover:to-gleam text-black font-medium shadow-glowNeo transition text-sm">Theme</button>
+      </div>
+    </div>
+    <div class="sheen-stripe"></div>
+  </header>
+
+  <!-- MAIN -->
+  <main class="mx-auto max-w-6xl grid grid-cols-1 md:grid-cols-[280px,1fr] gap-4 md:gap-6 px-4 sm:px-6 py-4">
+    <!-- ASIDE -->
+    <aside class="glass shiny border border-white/10 rounded-2xl p-4 md:sticky md:top-[90px] h-max shadow-glowNeo">
+      <div class="relative z-10 space-y-4">
+        <h2 class="font-semibold text-gray-100 flex items-center gap-2">
+          <span class="size-2 rounded-full bg-gleam animate-pulse-soft shadow-[0_0_12px_rgba(52,211,153,.65)]"></span>
+          Realtime Room (Express + Socket.IO)
+        </h2>
+        <div class="text-xs text-gray-400">
+          Messages broadcast to all connected clients. Ephemeral memory (no DB).
+        </div>
+
+        <div class="pt-1">
+          <label class="block text-xs text-gray-400 mb-1">Your display name</label>
+          <div class="flex items-center gap-2">
+            <input id="nameInput" class="w-full px-3 py-2 rounded-xl bg-baseDeep/80 ring-1 ring-white/10 outline-none focus:ring-neo/40 placeholder:text-gray-500" placeholder="e.g. GraceWalker" />
+            <button id="saveName" class="px-3 py-2 rounded-xl bg-gleam/20 hover:bg-gleam/30 ring-1 ring-gleam/40 text-gleam text-sm">Save</button>
+          </div>
+        </div>
+
+        <div class="pt-2">
+          <h3 class="text-sm text-gray-300 mb-2">Quick blessings</h3>
+          <div class="flex flex-wrap gap-2">
+            <button data-bless="Peace be with you!" class="chip">Peace ✌️</button>
+            <button data-bless="God bless and keep you." class="chip">Blessings ✨</button>
+            <button data-bless="Praying for you." class="chip">Prayer 🙏</button>
+            <button data-bless="Amen!" class="chip">Amen 🙌</button>
+          </div>
+        </div>
+      </div>
+    </aside>
+
+    <!-- CHAT -->
+    <section class="glass shiny border border-white/10 rounded-2xl shadow-glowNeo min-h-[60vh] flex flex-col">
+      <div id="messages" class="relative z-10 flex-1 overflow-y-auto p-4 sm:p-6 space-y-3"></div>
+
+      <div id="typing" class="px-4 pb-1 text-xs text-gray-400 hidden">
+        Someone is typing
+        <span class="inline-flex gap-1 ml-1 align-middle">
+          <span class="size-1.5 rounded-full bg-gray-400/70 animate-dot1"></span>
+          <span class="size-1.5 rounded-full bg-gray-400/70 animate-dot2"></span>
+          <span class="size-1.5 rounded-full bg-gray-400/70 animate-dot3"></span>
+        </span>
+      </div>
+
+      <form id="composer" class="relative z-10 p-3 sm:p-4 pt-2 border-t border-white/10">
+        <div class="flex items-end gap-2">
+          <textarea id="input" rows="1" placeholder="Type a message to encourage…"
+            class="flex-1 resize-none px-4 py-3 rounded-2xl bg-baseDeep/80 ring-1 ring-white/10 outline-none
+                   focus:ring-2 focus:ring-neo/40 placeholder:text-gray-500 transition"></textarea>
+
+          <button id="sendBtn" type="submit"
+            class="relative overflow-hidden px-4 py-3 rounded-2xl font-semibold text-base text-black
+                   bg-gradient-to-r from-neo/90 to-gleam/90 hover:from-neo hover:to-gleam
+                   shadow-glowNeo active:translate-y-[1px] transition">
+            <span class="relative z-10">Send</span>
+            <span class="absolute inset-0 opacity-30 pointer-events-none bg-[radial-gradient(120px_60px_at_var(--x,50%)_-30%,white,transparent_60%)]"></span>
+          </button>
+        </div>
+      </form>
+    </section>
+  </main>
+
+  <!-- Utilities -->
+  <style>
+    .chip { @apply px-3 py-1.5 text-xs rounded-xl bg-baseDeep/70 hover:bg-baseDeep/60 ring-1 ring-white/10 text-gray-300 transition; }
+    .msg-bubble { @apply relative max-w-[85%] md:max-w-[70%] px-4 py-3 rounded-2xl ring-1 backdrop-blur-xs shadow-glowNeo animate-fade-in; }
+    .msg-meta { @apply mt-1 text-[10px] uppercase tracking-wide text-gray-400; }
+    .msg-me { @apply ml-auto; }
+    .msg-them { @apply mr-auto; }
+  </style>
+
+  <!-- Socket.IO client (CDN) -->
+  <script src="https://cdn.socket.io/4.8.1/socket.io.min.js"></script>
+
+  <!-- Client logic -->
+  <script>
+    const NAME_KEY = 'christchat:name';
+    const verses = [
+      {t:"The LORD is my shepherd; I shall not want.", r:"Psalm 23:1"},
+      {t:"Cast all your anxiety on Him because He cares for you.", r:"1 Peter 5:7"},
+      {t:"Let all that you do be done in love.", r:"1 Corinthians 16:14"},
+      {t:"Be strong and courageous… the LORD your God is with you.", r:"Joshua 1:9"},
+      {t:"Rejoice in hope, be patient in tribulation, be constant in prayer.", r:"Romans 12:12"},
+      {t:"The light shines in the darkness…", r:"John 1:5"},
+    ];
+    const verseBar = document.getElementById('verseBar');
+    function setRandomVerse() {
+      const v = verses[Math.floor(Math.random()*verses.length)];
+      verseBar.textContent = `“${v.t}” — ${v.r}`;
+    }
+    setRandomVerse();
+
+    const $ = (s)=>document.querySelector(s);
+    const messagesEl = $('#messages');
+    const inputEl = $('#input');
+    const formEl = $('#composer');
+    const typingEl = $('#typing');
+    const nameInput = $('#nameInput');
+    const saveName = $('#saveName');
+    const btnName = $('#btnName');
+    const btnTheme = $('#btnTheme');
+    const sendBtn = $('#sendBtn');
+
+    let displayName = localStorage.getItem(NAME_KEY) || '';
+    if (displayName) nameInput.value = displayName;
+
+    function persistName() {
+      displayName = nameInput.value.trim() || 'Guest';
+      localStorage.setItem(NAME_KEY, displayName);
+    }
+    saveName.addEventListener('click', () => { persistName(); flash(btnName); });
+    btnName.addEventListener('click', () => { nameInput.focus(); nameInput.select(); });
+
+    // Theme toggle
+    let dark = true;
+    btnTheme.addEventListener('click', () => {
+      dark = !dark;
+      document.documentElement.classList.toggle('dark', dark);
+      flash(btnTheme);
+    });
+
+    // socket.io — path must match server
+    const socket = io({ path: "/socket.io", transports: ["websocket", "polling"] });
+
+    socket.on("connect", () => console.log("socket connected", socket.id));
+    socket.on("connect_error", (err) => console.error("connect_error:", err));
+    socket.on("disconnect", (r) => console.log("socket disconnected:", r));
+
+    socket.on("hello", () => {});
+    socket.on("history", (arr) => {
+      messagesEl.innerHTML = '';
+      arr.forEach(renderMessage);
+      scrollBottom(false);
+    });
+    socket.on("typing", ({user}) => showTypingHint(user));
+    socket.on("message", (m) => { renderMessage(m); scrollBottom(true); });
+
+    // send message
+    formEl.addEventListener('submit', (e) => {
+      e.preventDefault();
+      const text = inputEl.value.trim();
+      if (!text) return;
+      const m = {
+        id: (crypto.randomUUID && crypto.randomUUID()) || String(Date.now())+Math.random(),
+        user: (localStorage.getItem(NAME_KEY) || 'Guest'),
+        text,
+        ts: Date.now()
+      };
+      socket.emit("message", m);
+      inputEl.value = "";
+      autoGrow(inputEl);
+      inputEl.focus();
+    });
+
+    // typing
+    let lastType = 0;
+    inputEl.addEventListener('input', () => {
+      const now = Date.now();
+      if (now - lastType > 500) { socket.emit("typing", { user: displayName || "Guest" }); lastType = now; }
+      autoGrow(inputEl);
+    });
+
+    // blessings
+    document.querySelectorAll('[data-bless]').forEach(b =>
+      b.addEventListener('click', () => {
+        const text = b.getAttribute('data-bless');
+        const m = { id: crypto.randomUUID ? crypto.randomUUID() : Date.now(), user: displayName || 'Guest', text, ts: Date.now() };
+        socket.emit('message', m);
+      })
+    );
+
+    // UI helpers
+    function fmtTime(ts) {
+      const d = new Date(ts);
+      return d.toLocaleTimeString([], {hour:'2-digit', minute:'2-digit'});
+    }
+    function renderMessage(m) {
+      const isMe = (m.user === (displayName || 'Guest'));
+      const wrap = document.createElement('div');
+      wrap.className = `msg ${isMe ? 'msg-me' : 'msg-them'}`;
+
+      const bubble = document.createElement('div');
+      bubble.className = `msg-bubble ${isMe ? 'me' : 'them'} ${isMe ? 'bg-deepGreen/70 ring-gleam/20' : 'bg-purpleHud/70 ring-neo/20'}`;
+
+      const who = document.createElement('div');
+      who.className = 'text-xs text-gray-300/80 mb-1';
+      who.textContent = m.user || 'Guest';
+
+      const body = document.createElement('div');
+      body.className = 'leading-relaxed';
+      body.textContent = m.text;
+
+      const meta = document.createElement('div');
+      meta.className = 'msg-meta';
+      meta.textContent = fmtTime(m.ts);
+
+      if (!isMe) bubble.appendChild(who);
+      bubble.appendChild(body);
+      bubble.appendChild(meta);
+      wrap.appendChild(bubble);
+      messagesEl.appendChild(wrap);
+    }
+    function scrollBottom(smooth=true) {
+      messagesEl.scrollTo({ top: messagesEl.scrollHeight + 9999, behavior: smooth ? 'smooth' : 'auto' });
+    }
+
+    let typingTimer = null;
+    function showTypingHint() {
+      typingEl.classList.remove('hidden');
+      if (typingTimer) clearTimeout(typingTimer);
+      typingTimer = setTimeout(() => typingEl.classList.add('hidden'), 1200);
+    }
+
+    function autoGrow(el) {
+      el.style.height = 'auto';
+      el.style.height = Math.min(el.scrollHeight, 160) + 'px';
+    }
+    sendBtn.addEventListener('pointermove', e => {
+      const r = sendBtn.getBoundingClientRect();
+      const x = ((e.clientX - r.left) / r.width) * 100;
+      sendBtn.style.setProperty('--x', x + '%');
+    });
+    function flash(el) {
+      el.animate([{filter:'brightness(1.1)'}, {filter:'brightness(1)'}], {duration:350, easing:'ease-out'});
+    }
+  </script>
+</body>
+</html>
