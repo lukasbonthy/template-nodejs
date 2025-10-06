@@ -99,8 +99,10 @@
           </p>
         </div>
       </div>
+
+      <!-- connection status -->
       <div class="flex items-center gap-2">
-        <button id="btnName" class="px-3 py-1.5 rounded-xl bg-deepGreen/60 hover:bg-deepGreen/80 ring-1 ring-white/10 shadow-glowEmerald transition text-sm">Set Name</button>
+        <div id="statusBadge" class="px-2 py-1 rounded-full text-xs bg-gray-600/40 ring-1 ring-white/10">Connecting…</div>
         <button id="btnTheme" class="px-3 py-1.5 rounded-xl bg-gradient-to-r from-neo/80 to-gleam/70 hover:from-neo hover:to-gleam text-black font-medium shadow-glowNeo transition text-sm">Theme</button>
       </div>
     </div>
@@ -180,8 +182,14 @@
     .msg-them { @apply mr-auto; }
   </style>
 
-  <!-- Socket.IO client (CDN) -->
-  <script src="https://cdn.socket.io/4.8.1/socket.io.min.js"></script>
+  <!-- Prefer the server-served client (matches server version) -->
+  <script src="/socket.io/socket.io.js"></script>
+  <!-- Fallback to CDN if the above ever fails (e.g., misrouted) -->
+  <script>
+    if (typeof io === 'undefined') {
+      document.write('<script src="https://cdn.socket.io/4.8.1/socket.io.min.js"><\/script>');
+    }
+  </script>
 
   <!-- Client logic -->
   <script>
@@ -208,85 +216,43 @@
     const typingEl = $('#typing');
     const nameInput = $('#nameInput');
     const saveName = $('#saveName');
-    const btnName = $('#btnName');
     const btnTheme = $('#btnTheme');
     const sendBtn = $('#sendBtn');
+    const statusBadge = $('#statusBadge');
 
-    let displayName = localStorage.getItem(NAME_KEY) || '';
-    if (displayName) nameInput.value = displayName;
+    let displayName = localStorage.getItem(NAME_KEY) || 'Guest';
+    nameInput.value = displayName;
 
-    function persistName() {
-      displayName = nameInput.value.trim() || 'Guest';
-      localStorage.setItem(NAME_KEY, displayName);
+    function setStatus(text, cls) {
+      statusBadge.textContent = text;
+      statusBadge.className = "px-2 py-1 rounded-full text-xs ring-1 " + cls;
     }
-    saveName.addEventListener('click', () => { persistName(); flash(btnName); });
-    btnName.addEventListener('click', () => { nameInput.focus(); nameInput.select(); });
 
     // Theme toggle
     let dark = true;
     btnTheme.addEventListener('click', () => {
       dark = !dark;
       document.documentElement.classList.toggle('dark', dark);
-      flash(btnTheme);
     });
 
-    // socket.io — path must match server
-    const socket = io({ path: "/socket.io", transports: ["websocket", "polling"] });
-
-    socket.on("connect", () => console.log("socket connected", socket.id));
-    socket.on("connect_error", (err) => console.error("connect_error:", err));
-    socket.on("disconnect", (r) => console.log("socket disconnected:", r));
-
-    socket.on("hello", () => {});
-    socket.on("history", (arr) => {
-      messagesEl.innerHTML = '';
-      arr.forEach(renderMessage);
-      scrollBottom(false);
-    });
-    socket.on("typing", ({user}) => showTypingHint(user));
-    socket.on("message", (m) => { renderMessage(m); scrollBottom(true); });
-
-    // send message
-    formEl.addEventListener('submit', (e) => {
-      e.preventDefault();
-      const text = inputEl.value.trim();
-      if (!text) return;
-      const m = {
-        id: (crypto.randomUUID && crypto.randomUUID()) || String(Date.now())+Math.random(),
-        user: (localStorage.getItem(NAME_KEY) || 'Guest'),
-        text,
-        ts: Date.now()
-      };
-      socket.emit("message", m);
-      inputEl.value = "";
-      autoGrow(inputEl);
-      inputEl.focus();
+    saveName.addEventListener('click', () => {
+      displayName = nameInput.value.trim() || 'Guest';
+      localStorage.setItem(NAME_KEY, displayName);
+      statusBadge.animate([{filter:'brightness(1.2)'},{filter:'brightness(1)'}], {duration:350});
     });
 
-    // typing
-    let lastType = 0;
-    inputEl.addEventListener('input', () => {
-      const now = Date.now();
-      if (now - lastType > 500) { socket.emit("typing", { user: displayName || "Guest" }); lastType = now; }
-      autoGrow(inputEl);
-    });
+    // Deduplicate by id (prevents double-render from optimistic + server echo)
+    const seen = new Set();
 
-    // blessings
-    document.querySelectorAll('[data-bless]').forEach(b =>
-      b.addEventListener('click', () => {
-        const text = b.getAttribute('data-bless');
-        const m = { id: crypto.randomUUID ? crypto.randomUUID() : Date.now(), user: displayName || 'Guest', text, ts: Date.now() };
-        socket.emit('message', m);
-      })
-    );
-
-    // UI helpers
     function fmtTime(ts) {
       const d = new Date(ts);
       return d.toLocaleTimeString([], {hour:'2-digit', minute:'2-digit'});
     }
-    function renderMessage(m) {
-      const isMe = (m.user === (displayName || 'Guest'));
+    function renderMessage(m, smooth=true) {
+      if (!m || seen.has(m.id)) return;
+      seen.add(m.id);
+
+      const isMe = (m.user === displayName && !!displayName);
       const wrap = document.createElement('div');
       wrap.className = `msg ${isMe ? 'msg-me' : 'msg-them'}`;
 
@@ -310,8 +276,6 @@
       bubble.appendChild(meta);
       wrap.appendChild(bubble);
       messagesEl.appendChild(wrap);
-    }
-    function scrollBottom(smooth=true) {
       messagesEl.scrollTo({ top: messagesEl.scrollHeight + 9999, behavior: smooth ? 'smooth' : 'auto' });
     }
 
@@ -322,18 +286,62 @@
       typingTimer = setTimeout(() => typingEl.classList.add('hidden'), 1200);
     }
 
+    // Socket.IO — explicit path matches server
+    const socket = io({ path: "/socket.io", transports: ["websocket", "polling"] });
+
+    socket.on("connect", () => setStatus("Connected", "bg-gleam/20 text-gleam ring-gleam/40"));
+    socket.on("connect_error", (err) => setStatus("Retrying…", "bg-yellow-400/20 text-yellow-300 ring-yellow-400/40"));
+    socket.on("reconnect_attempt", () => setStatus("Retrying…", "bg-yellow-400/20 text-yellow-300 ring-yellow-400/40"));
+    socket.on("disconnect", () => setStatus("Disconnected", "bg-red-400/20 text-red-300 ring-red-400/40"));
+
+    socket.on("hello", () => {});
+    socket.on("history", (arr) => {
+      messagesEl.innerHTML = '';
+      seen.clear();
+      (arr || []).forEach(evt => renderMessage(evt, false));
+    });
+    socket.on("typing", () => showTypingHint());
+    socket.on("message", (m) => renderMessage(m, true));
+
+    // Send
+    formEl.addEventListener('submit', (e) => {
+      e.preventDefault();
+      const text = inputEl.value.trim();
+      if (!text) return;
+      const m = {
+        id: (crypto.randomUUID && crypto.randomUUID()) || String(Date.now()) + Math.random(),
+        user: displayName || 'Guest',
+        text,
+        ts: Date.now()
+      };
+      // optimistic render so you ALWAYS see your message immediately
+      renderMessage(m, true);
+      // then send to server for broadcast
+      socket.emit("message", m);
+      inputEl.value = "";
+      autoGrow(inputEl);
+      inputEl.focus();
+    });
+
+    // typing + autogrow
+    let lastType = 0;
+    inputEl.addEventListener('input', () => {
+      const now = Date.now();
+      if (now - lastType > 500) { socket.emit("typing", { user: displayName || "Guest" }); lastType = now; }
+      autoGrow(inputEl);
+    });
     function autoGrow(el) {
       el.style.height = 'auto';
       el.style.height = Math.min(el.scrollHeight, 160) + 'px';
     }
+
+    // sheen follows pointer
+    const sendBtn = document.getElementById('sendBtn');
     sendBtn.addEventListener('pointermove', e => {
       const r = sendBtn.getBoundingClientRect();
       const x = ((e.clientX - r.left) / r.width) * 100;
       sendBtn.style.setProperty('--x', x + '%');
     });
-    function flash(el) {
-      el.animate([{filter:'brightness(1.1)'}, {filter:'brightness(1)'}], {duration:350, easing:'ease-out'});
-    }
   </script>
 </body>
 </html>
