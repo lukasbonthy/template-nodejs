@@ -11,28 +11,26 @@ const __dirname = path.dirname(__filename);
 
 const app = express();
 const server = http.createServer(app);
+
+// IMPORTANT: same-origin clients (Render) don't need CORS,
+// but leaving it permissive avoids surprises.
 const io = new SocketIO(server, {
-  path: "/socket.io",               // client matches this
-  cors: { origin: true, credentials: true }
+  path: "/socket.io",
+  cors: { origin: "*", credentials: true }
 });
 
 const PORT = process.env.PORT || 3000;
 
-// Keep CSP off (we use inline scripts & CDN)
 app.use(helmet({ contentSecurityPolicy: false }));
 app.use(compression());
-
-// Serve static
 app.use(express.static(path.join(__dirname, "public"), { extensions: ["html"] }));
 
-// In-memory history
+// simple in-memory history
 const HISTORY_LIMIT = 200;
 let history = [];
 
-// Socket.IO
 io.on("connection", (socket) => {
   console.log("✅ connected:", socket.id);
-
   socket.emit("hello", { serverTime: Date.now() });
   if (history.length) socket.emit("history", history);
 
@@ -59,11 +57,11 @@ io.on("connection", (socket) => {
   });
 });
 
-// SPA fallback that does NOT intercept /socket.io/*
+// SPA fallback — DO NOT intercept /socket.io/*
 app.get(/^\/(?!socket\.io\/).*/, (_, res) => {
   res.sendFile(path.join(__dirname, "public", "index.html"));
 });
 
 server.listen(PORT, () => {
-  console.log(`🚀 http://localhost:${PORT}`);
+  console.log(`🚀 on http://localhost:${PORT}`);
 });
