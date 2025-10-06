@@ -13,22 +13,22 @@
       theme: {
         extend: {
           colors: {
-            base: '#0b0a10',        // purplish-blackish
+            base: '#0b0a10',
             baseDeep: '#08070c',
-            deepGreen: '#0b1a1a',   // greenish-blackish
+            deepGreen: '#0b1a1a',
             purpleHud: '#241335',
             neo: '#a78bfa',
-            gleam: '#34d399',
+            gleam: '#34d399'
           },
           boxShadow: {
             glowNeo: '0 0 24px rgba(167,139,250,.25)',
-            glowEmerald: '0 0 24px rgba(52,211,153,.18)',
+            glowEmerald: '0 0 24px rgba(52,211,153,.18)'
           },
           backdropBlur: { xs: '2px' },
           keyframes: {
             fadeIn: { '0%': {opacity:0, transform:'translateY(8px)'}, '100%': {opacity:1, transform:'translateY(0)'} },
             pulseSoft: { '0%,100%': {opacity:.8}, '50%': {opacity:1} },
-            sheen: { '0%': { transform: 'translateX(-150%)' }, '100%': { transform: 'translateX(150%)' } },
+            sheen: { '0%': { transform:'translateX(-150%)' }, '100%': { transform:'translateX(150%)' } },
             dots: { '0%,80%,100%': { transform:'scale(0)' }, '40%': { transform:'scale(1)' } }
           },
           animation: {
@@ -37,7 +37,7 @@
             'sheen': 'sheen 3.2s ease-in-out infinite',
             'dot1': 'dots 1.2s infinite',
             'dot2': 'dots 1.2s .2s infinite',
-            'dot3': 'dots 1.2s .4s infinite',
+            'dot3': 'dots 1.2s .4s infinite'
           }
         }
       }
@@ -100,7 +100,6 @@
       </div>
       <div class="flex items-center gap-2">
         <button id="btnName" class="px-3 py-1.5 rounded-xl bg-deepGreen/60 hover:bg-deepGreen/80 ring-1 ring-white/10 shadow-glowEmerald transition text-sm">Set Name</button>
-        <button id="btnClear" class="px-3 py-1.5 rounded-xl bg-purpleHud/70 hover:bg-purpleHud/90 ring-1 ring-white/10 transition text-sm">Clear</button>
         <button id="btnTheme" class="px-3 py-1.5 rounded-xl bg-gradient-to-r from-neo/80 to-gleam/70 hover:from-neo hover:to-gleam text-black font-medium shadow-glowNeo transition text-sm">Theme</button>
       </div>
     </div>
@@ -114,10 +113,10 @@
       <div class="relative z-10 space-y-4">
         <h2 class="font-semibold text-gray-100 flex items-center gap-2">
           <span class="size-2 rounded-full bg-gleam animate-pulse-soft shadow-[0_0_12px_rgba(52,211,153,.65)]"></span>
-          Realtime Room
+          Realtime Room (Express + Socket.IO)
         </h2>
         <div class="text-xs text-gray-400">
-          Live via WebSocket (Node.js). No database—messages are ephemeral in-memory.
+          Messages broadcast to all connected clients. Ephemeral memory (no DB).
         </div>
 
         <div class="pt-1">
@@ -180,6 +179,9 @@
     .msg-them { @apply mr-auto; }
   </style>
 
+  <!-- Socket.IO client -->
+  <script src="/socket.io/socket.io.js"></script>
+
   <!-- Client logic -->
   <script>
     const NAME_KEY = 'christchat:name';
@@ -198,7 +200,7 @@
     }
     setRandomVerse();
 
-    const $ = sel => document.querySelector(sel);
+    const $ = (s)=>document.querySelector(s);
     const messagesEl = $('#messages');
     const inputEl = $('#input');
     const formEl = $('#composer');
@@ -206,7 +208,6 @@
     const nameInput = $('#nameInput');
     const saveName = $('#saveName');
     const btnName = $('#btnName');
-    const btnClear = $('#btnClear');
     const btnTheme = $('#btnTheme');
     const sendBtn = $('#sendBtn');
 
@@ -228,24 +229,64 @@
       flash(btnTheme);
     });
 
-    // Clear only clears local UI; server memory persists until restart.
-    btnClear.addEventListener('click', () => {
+    // socket.io
+    const socket = io({ transports: ["websocket", "polling"] });
+
+    socket.on("hello", () => {});
+    socket.on("history", (arr) => {
       messagesEl.innerHTML = '';
+      arr.forEach(renderMessage);
+      scrollBottom(false);
+    });
+    socket.on("typing", ({user}) => showTypingHint(user));
+    socket.on("message", (m) => { renderMessage(m); scrollBottom(true); });
+
+    // send message
+    formEl.addEventListener('submit', (e) => {
+      e.preventDefault();
+      const text = inputEl.value.trim();
+      if (!text) return;
+      const m = {
+        id: (crypto.randomUUID && crypto.randomUUID()) || String(Date.now())+Math.random(),
+        user: displayName || 'Guest',
+        text,
+        ts: Date.now()
+      };
+      socket.emit("message", m);
+      inputEl.value = "";
+      autoGrow(inputEl);
+      inputEl.focus();
     });
 
-    // Render helpers
+    // typing
+    let lastType = 0;
+    inputEl.addEventListener('input', () => {
+      const now = Date.now();
+      if (now - lastType > 500) { socket.emit("typing", { user: displayName || "Guest" }); lastType = now; }
+      autoGrow(inputEl);
+    });
+
+    // blessings
+    document.querySelectorAll('[data-bless]').forEach(b =>
+      b.addEventListener('click', () => {
+        const text = b.getAttribute('data-bless');
+        const m = { id: crypto.randomUUID ? crypto.randomUUID() : Date.now(), user: displayName || 'Guest', text, ts: Date.now() };
+        socket.emit('message', m);
+      })
+    );
+
+    // UI helpers
     function fmtTime(ts) {
       const d = new Date(ts);
       return d.toLocaleTimeString([], {hour:'2-digit', minute:'2-digit'});
     }
     function renderMessage(m) {
-      const isMe = m.user === displayName && !!displayName;
+      const isMe = (m.user === displayName && !!displayName);
       const wrap = document.createElement('div');
       wrap.className = `msg ${isMe ? 'msg-me' : 'msg-them'}`;
 
       const bubble = document.createElement('div');
       bubble.className = `msg-bubble ${isMe ? 'me' : 'them'} ${isMe ? 'bg-deepGreen/70 ring-gleam/20' : 'bg-purpleHud/70 ring-neo/20'}`;
-      bubble.style.zIndex = 1;
 
       const who = document.createElement('div');
       who.className = 'text-xs text-gray-300/80 mb-1';
@@ -264,10 +305,11 @@
       bubble.appendChild(meta);
       wrap.appendChild(bubble);
       messagesEl.appendChild(wrap);
-      messagesEl.scrollTo({ top: messagesEl.scrollHeight + 9999, behavior: 'smooth' });
+    }
+    function scrollBottom(smooth=true) {
+      messagesEl.scrollTo({ top: messagesEl.scrollHeight + 9999, behavior: smooth ? 'smooth' : 'auto' });
     }
 
-    // Typing UI
     let typingTimer = null;
     function showTypingHint() {
       typingEl.classList.remove('hidden');
@@ -275,93 +317,18 @@
       typingTimer = setTimeout(() => typingEl.classList.add('hidden'), 1200);
     }
 
-    // Sheen effect follows pointer on Send button
+    function autoGrow(el) {
+      el.style.height = 'auto';
+      el.style.height = Math.min(el.scrollHeight, 160) + 'px';
+    }
     sendBtn.addEventListener('pointermove', e => {
       const r = sendBtn.getBoundingClientRect();
       const x = ((e.clientX - r.left) / r.width) * 100;
       sendBtn.style.setProperty('--x', x + '%');
     });
-
     function flash(el) {
       el.animate([{filter:'brightness(1.1)'}, {filter:'brightness(1)'}], {duration:350, easing:'ease-out'});
     }
-
-    // ---- WebSocket ----
-    const WS_URL = (location.protocol === 'https:' ? 'wss://' : 'ws://') + location.host + '/ws';
-    let ws, retry = 0, maxRetryDelay = 8000;
-
-    function connect() {
-      ws = new WebSocket(WS_URL);
-
-      ws.addEventListener('open', () => {
-        retry = 0;
-        // Identify (optional)
-        if (!displayName) { displayName = 'Guest'; localStorage.setItem(NAME_KEY, displayName); }
-      });
-
-      ws.addEventListener('message', (ev) => {
-        let msg; try { msg = JSON.parse(ev.data); } catch { return; }
-        if (msg.type === 'hello') return; // ignore
-        if (msg.type === 'history' && Array.isArray(msg.payload)) {
-          messagesEl.innerHTML = '';
-          msg.payload.forEach(evt => { if (evt.type === 'message') renderMessage(evt.payload); });
-          return;
-        }
-        if (msg.type === 'typing') showTypingHint();
-        if (msg.type === 'message') renderMessage(msg.payload);
-      });
-
-      ws.addEventListener('close', () => {
-        // Reconnect with backoff
-        const delay = Math.min(250 * Math.pow(2, retry++), maxRetryDelay);
-        setTimeout(connect, delay);
-      });
-
-      ws.addEventListener('error', () => {
-        try { ws.close(); } catch {}
-      });
-    }
-    connect();
-
-    // Send helpers
-    function send(evt) {
-      if (ws && ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify(evt));
-    }
-
-    // Composer
-    formEl.addEventListener('submit', (e) => {
-      e.preventDefault();
-      const text = inputEl.value.trim();
-      if (!text) return;
-      const m = {
-        id: (crypto.randomUUID && crypto.randomUUID()) || String(Date.now()) + Math.random(),
-        user: displayName || 'Guest',
-        text,
-        ts: Date.now()
-      };
-      send({ type: 'message', payload: m });
-      inputEl.value = '';
-      autoGrow(inputEl);
-      inputEl.focus();
-    });
-
-    // Typing emit & textarea autogrow
-    let lastType = 0;
-    inputEl.addEventListener('input', () => {
-      const now = Date.now();
-      if (now - lastType > 500) { send({ type: 'typing', payload: { user: displayName || 'Guest' } }); lastType = now; }
-      autoGrow(inputEl);
-    });
-    function autoGrow(el) { el.style.height = 'auto'; el.style.height = Math.min(el.scrollHeight, 160) + 'px'; }
-
-    // Quick blessings
-    document.querySelectorAll('[data-bless]').forEach(b =>
-      b.addEventListener('click', () => {
-        const text = b.getAttribute('data-bless');
-        const m = { id: crypto.randomUUID ? crypto.randomUUID() : Date.now(), user: displayName || 'Guest', text, ts: Date.now() };
-        send({ type: 'message', payload: m });
-      })
-    );
   </script>
 </body>
 </html>
