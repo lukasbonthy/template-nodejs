@@ -155,7 +155,7 @@
         </span>
       </div>
 
-      <!-- Important: prevent page reload -->
+      <!-- prevent page reload -->
       <form id="composer" onsubmit="return false" autocomplete="off" novalidate class="relative z-10 p-3 sm:p-4 pt-2 border-t border-white/10">
         <div class="flex items-end gap-2">
           <textarea id="input" rows="1" placeholder="Type a message to encourage…"
@@ -174,7 +174,6 @@
     </section>
   </main>
 
-  <!-- Utilities -->
   <style>
     .chip { @apply px-3 py-1.5 text-xs rounded-xl bg-baseDeep/70 hover:bg-baseDeep/60 ring-1 ring-white/10 text-gray-300 transition; }
     .msg-bubble { @apply relative max-w-[85%] md:max-w-[70%] px-4 py-3 rounded-2xl ring-1 backdrop-blur-xs shadow-glowNeo animate-fade-in; }
@@ -183,14 +182,10 @@
     .msg-them { @apply mr-auto; }
   </style>
 
-  <!-- Socket.IO client served by our server -->
+  <!-- Socket.IO client (served by our server) -->
   <script src="/socket.io/socket.io.js"></script>
-  <!-- CDN fallback if above fails -->
-  <script>if(typeof io==='undefined'){document.write('<script src="https://cdn.socket.io/4.8.1/socket.io.min.js"><\\/script>');}</script>
 
-  <!-- App -->
   <script>
-    // Elements
     const $ = s => document.querySelector(s);
     const messagesEl = $('#messages');
     const inputEl = $('#input');
@@ -201,18 +196,15 @@
     const saveName = $('#saveName');
     const btnTheme = $('#btnTheme');
 
-    // State
     const NAME_KEY = 'christchat:name';
     let displayName = localStorage.getItem(NAME_KEY) || 'Guest';
     nameInput.value = displayName;
 
-    // Status helper
     function setStatus(text, cls) {
       statusBadge.textContent = text;
       statusBadge.className = "px-2 py-1 rounded-full text-xs ring-1 " + cls;
     }
 
-    // Theme toggle
     let dark = true;
     btnTheme.addEventListener('click', () => {
       dark = !dark;
@@ -222,30 +214,27 @@
     saveName.addEventListener('click', () => {
       displayName = nameInput.value.trim() || 'Guest';
       localStorage.setItem(NAME_KEY, displayName);
-      statusBadge.animate([{filter:'brightness(1.2)'},{filter:'brightness(1)'}], {duration:300});
     });
 
-    // Socket.IO
-    const socket = io({ path: "/socket.io", transports: ["websocket", "polling"] });
+    // 🔧 KEY CHANGE: force long-polling and disable upgrade to WebSocket
+    const socket = io({
+      path: "/socket.io",
+      transports: ["polling"],
+      upgrade: false,
+      withCredentials: false
+    });
 
-    socket.on("connect", () => setStatus("Connected", "bg-gleam/20 text-gleam ring-gleam/40"));
+    socket.on("connect", () => setStatus("Connected (polling)", "bg-gleam/20 text-gleam ring-gleam/40"));
     socket.on("connect_error", () => setStatus("Retrying…", "bg-yellow-400/20 text-yellow-300 ring-yellow-400/40"));
     socket.on("reconnect_attempt", () => setStatus("Retrying…", "bg-yellow-400/20 text-yellow-300 ring-yellow-400/40"));
     socket.on("disconnect", () => setStatus("Disconnected", "bg-red-400/20 text-red-300 ring-red-400/40"));
 
-    socket.on("history", (arr) => {
-      messagesEl.innerHTML = '';
-      (arr || []).forEach(renderMessage);
-    });
+    socket.on("history", (arr) => { messagesEl.innerHTML = ''; (arr||[]).forEach(renderMessage); });
     socket.on("typing", () => showTypingHint());
     socket.on("message", (m) => renderMessage(m));
 
-    // UI helpers
-    function fmtTime(ts) {
-      const d = new Date(ts);
-      return d.toLocaleTimeString([], {hour:'2-digit', minute:'2-digit'});
-    }
-    function renderMessage(m) {
+    function fmtTime(ts){ const d=new Date(ts); return d.toLocaleTimeString([], {hour:'2-digit', minute:'2-digit'}); }
+    function renderMessage(m){
       const isMe = (m.user === displayName);
       const wrap = document.createElement('div');
       wrap.className = `msg ${isMe ? 'msg-me' : 'msg-them'}`;
@@ -266,70 +255,37 @@
       meta.textContent = fmtTime(m.ts);
 
       if (!isMe) bubble.appendChild(who);
-      bubble.appendChild(body);
-      bubble.appendChild(meta);
-      wrap.appendChild(bubble);
-      messagesEl.appendChild(wrap);
+      bubble.appendChild(body); bubble.appendChild(meta);
+      wrap.appendChild(bubble); messagesEl.appendChild(wrap);
       messagesEl.scrollTo({ top: messagesEl.scrollHeight + 9999, behavior: 'smooth' });
     }
 
-    let typingTimer = null;
-    function showTypingHint() {
-      typingEl.classList.remove('hidden');
-      clearTimeout(typingTimer);
-      typingTimer = setTimeout(() => typingEl.classList.add('hidden'), 1200);
-    }
+    let typingTimer=null;
+    function showTypingHint(){ typingEl.classList.remove('hidden'); clearTimeout(typingTimer); typingTimer=setTimeout(()=>typingEl.classList.add('hidden'),1200); }
 
-    // Send handlers (no page reload)
-    function sendCurrentMessage() {
+    function sendCurrentMessage(){
       const text = inputEl.value.trim();
-      if (!text) return;
-      const m = {
-        id: (crypto.randomUUID && crypto.randomUUID()) || String(Date.now()) + Math.random(),
-        user: displayName,
-        text,
-        ts: Date.now()
-      };
+      if(!text) return;
+      const m = { id: (crypto.randomUUID&&crypto.randomUUID())||String(Date.now())+Math.random(), user: displayName, text, ts: Date.now() };
       socket.emit("message", m);
-      inputEl.value = "";
-      autoGrow(inputEl);
-      inputEl.focus();
+      inputEl.value=""; autoGrow(inputEl); inputEl.focus();
     }
+
     sendBtn.addEventListener('click', sendCurrentMessage);
+    inputEl.addEventListener('keydown', (e)=>{ if(e.key==='Enter' && !e.shiftKey){ e.preventDefault(); sendCurrentMessage(); } });
 
-    // Enter to send (Shift+Enter = newline)
-    inputEl.addEventListener('keydown', (e) => {
-      if (e.key === 'Enter' && !e.shiftKey) {
-        e.preventDefault();
-        sendCurrentMessage();
-      }
-    });
-
-    // Typing + autogrow
-    let lastType = 0;
-    inputEl.addEventListener('input', () => {
-      const now = Date.now();
-      if (now - lastType > 500) { socket.emit("typing", { user: displayName }); lastType = now; }
+    let lastType=0;
+    inputEl.addEventListener('input', ()=>{
+      const now = Date.now(); if(now-lastType>500){ socket.emit("typing",{user:displayName}); lastType=now; }
       autoGrow(inputEl);
     });
-    function autoGrow(el) {
-      el.style.height = 'auto';
-      el.style.height = Math.min(el.scrollHeight, 160) + 'px';
-    }
+    function autoGrow(el){ el.style.height='auto'; el.style.height=Math.min(el.scrollHeight,160)+'px'; }
 
     // button sheen
     sendBtn.addEventListener('pointermove', e => {
       const r = sendBtn.getBoundingClientRect();
       const x = ((e.clientX - r.left) / r.width) * 100;
       sendBtn.style.setProperty('--x', x + '%');
-    });
-
-    // Quick blessings
-    document.querySelectorAll('[data-bless]').forEach(b => {
-      b.addEventListener('click', () => {
-        inputEl.value = b.getAttribute('data-bless');
-        sendCurrentMessage();
-      });
     });
   </script>
 </body>
