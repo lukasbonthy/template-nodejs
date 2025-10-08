@@ -16,7 +16,6 @@ const WORLD = {
   width: 2400,
   height: 1800,
   obstacles: [
-    // x, y are top-left
     { x: 600, y: 300, w: 500, h: 260, label: 'Cafeteria' },
     { x: 1200, y: 700, w: 300, h: 300, label: 'Library' },
     { x: 300, y: 1100, w: 700, h: 220, label: 'Gym' },
@@ -25,11 +24,15 @@ const WORLD = {
   spawn: { x: 200, y: 200 }
 };
 
-const TICK_RATE = 20;           // 20 updates per second
+const TICK_RATE = 20;
 const DT = 1 / TICK_RATE;
-const SPEED = 180;              // px/sec
+const SPEED = 180;
 const PLAYER_RADIUS = 18;
 const NAME_MAX = 16;
+
+// chat config
+const CHAT_MAX_LEN = 140;
+const CHAT_COOLDOWN_MS = 600;
 
 // playerId -> player
 const players = new Map();
@@ -40,19 +43,26 @@ function sanitizeName(raw) {
   if (typeof raw !== 'string') return 'Student';
   let s = raw.trim();
   if (s.length === 0) s = 'Student';
-  s = s.replace(/[^\w\s\-'.]/g, ''); // basic allowlist
+  s = s.replace(/[^\w\s\-'.]/g, '');
   if (s.length > NAME_MAX) s = s.slice(0, NAME_MAX);
   return s;
 }
 
+function sanitizeChat(raw) {
+  let s = String(raw ?? '').trim();
+  if (!s) return '';
+  // Keep letters, numbers, punctuation, and spaces (general Unicode-safe)
+  s = s.replace(/[^\p{L}\p{N}\p{P}\p{Zs}]/gu, '');
+  if (s.length > CHAT_MAX_LEN) s = s.slice(0, CHAT_MAX_LEN);
+  return s;
+}
+
 function randomColor() {
-  // pleasant pastel-ish
   const hue = Math.floor(Math.random() * 360);
   return `hsl(${hue} 70% 60%)`;
 }
 
 function rectsIntersectCircle(rx, ry, rw, rh, cx, cy, cr) {
-  // clamp circle center to rect
   const clampedX = Math.max(rx, Math.min(cx, rx + rw));
   const clampedY = Math.max(ry, Math.min(cy, ry + rh));
   const dx = cx - clampedX;
@@ -61,44 +71,36 @@ function rectsIntersectCircle(rx, ry, rw, rh, cx, cy, cr) {
 }
 
 function collideWithWorld(p, nx, ny) {
-  // Clamp to world bounds
   nx = Math.max(PLAYER_RADIUS, Math.min(WORLD.width - PLAYER_RADIUS, nx));
   ny = Math.max(PLAYER_RADIUS, Math.min(WORLD.height - PLAYER_RADIUS, ny));
 
-  // Resolve rect collisions by separating axes (x then y)
-  // Try move x
   let tryX = nx, tryY = p.y;
   for (const o of WORLD.obstacles) {
     if (rectsIntersectCircle(o.x, o.y, o.w, o.h, tryX, tryY, PLAYER_RADIUS)) {
-      // try to resolve on x axis by stepping back
-      // Move back along x
       if (tryX > o.x + o.w / 2) {
-        tryX = o.x + o.w + PLAYER_RADIUS; // push to right
+        tryX = o.x + o.w + PLAYER_RADIUS;
       } else {
-        tryX = o.x - PLAYER_RADIUS;       // push to left
+        tryX = o.x - PLAYER_RADIUS;
       }
     }
   }
 
-  // Then move y
   let finalX = tryX, finalY = ny;
   for (const o of WORLD.obstacles) {
     if (rectsIntersectCircle(o.x, o.y, o.w, o.h, finalX, finalY, PLAYER_RADIUS)) {
       if (finalY > o.y + o.h / 2) {
-        finalY = o.y + o.h + PLAYER_RADIUS; // push down
+        finalY = o.y + o.h + PLAYER_RADIUS;
       } else {
-        finalY = o.y - PLAYER_RADIUS;       // push up
+        finalY = o.y - PLAYER_RADIUS;
       }
     }
   }
 
-  // Clamp again just in case
   finalX = Math.max(PLAYER_RADIUS, Math.min(WORLD.width - PLAYER_RADIUS, finalX));
   finalY = Math.max(PLAYER_RADIUS, Math.min(WORLD.height - PLAYER_RADIUS, finalY));
   return { x: finalX, y: finalY };
 }
 
-// Assign unique-ish name if duplicate
 function enforceUniqueName(name) {
   const taken = new Set(Array.from(players.values()).map(p => p.name));
   if (!taken.has(name)) return name;
@@ -108,17 +110,16 @@ function enforceUniqueName(name) {
 }
 
 io.on('connection', (socket) => {
-  // Receive join with name
   socket.on('join', (rawName) => {
-    let name = sanitizeName(rawName);
-    name = enforceUniqueName(name);
-
+    let name = enforceUniqueName(sanitizeName(rawName));
     const p = {
       id: socket.id,
       name,
       x: WORLD.spawn.x + Math.random() * 200,
       y: WORLD.spawn.y + Math.random() * 200,
-      color: randomColor()
+      color: randomColor(),
+      chat: null,
+      _lastChatAt: 0
     };
     players.set(socket.id, p);
     inputs.set(socket.id, { up: false, down: false, left: false, right: false });
@@ -128,18 +129,27 @@ io.on('connection', (socket) => {
       world: WORLD,
       radius: PLAYER_RADIUS
     });
-
-    // Announce new player to others? Not necessary—state broadcast handles it.
   });
 
   socket.on('input', (state) => {
     const inp = inputs.get(socket.id);
     if (!inp) return;
-    // Basic coercion
     inp.up = !!state.up;
     inp.down = !!state.down;
     inp.left = !!state.left;
     inp.right = !!state.right;
+  });
+
+  // NEW: chat handler
+  socket.on('chat', (raw) => {
+    const p = players.get(socket.id);
+    if (!p) return;
+    const now = Date.now();
+    if (now - p._lastChatAt < CHAT_COOLDOWN_MS) return; // basic anti-spam
+    const text = sanitizeChat(raw);
+    if (!text) return;
+    p.chat = { text, ts: now };
+    p._lastChatAt = now;
   });
 
   socket.on('disconnect', () => {
@@ -148,7 +158,6 @@ io.on('connection', (socket) => {
   });
 });
 
-// Server tick (authoritative movement)
 setInterval(() => {
   for (const [id, p] of players) {
     const inp = inputs.get(id);
@@ -159,7 +168,7 @@ setInterval(() => {
     if (inp.up) dy -= 1;
     if (inp.down) dy += 1;
 
-    if (dx !== 0 || dy !== 0) {
+    if (dx || dy) {
       const len = Math.hypot(dx, dy) || 1;
       dx /= len; dy /= len;
       const nextX = p.x + dx * SPEED * DT;
@@ -171,7 +180,13 @@ setInterval(() => {
   }
 
   const snapshot = Array.from(players.values()).map(p => ({
-    id: p.id, name: p.name, x: Math.round(p.x), y: Math.round(p.y), color: p.color
+    id: p.id,
+    name: p.name,
+    x: Math.round(p.x),
+    y: Math.round(p.y),
+    color: p.color,
+    chatText: p.chat?.text || null,
+    chatTs: p.chat?.ts || 0
   }));
   io.emit('state', { t: Date.now(), players: snapshot });
 }, 1000 / TICK_RATE);
