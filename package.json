@@ -1,7 +1,7 @@
 {
   "name": "school-world",
-  "version": "1.1.0",
-  "description": "2D virtual campus with realtime movement + chat bubbles",
+  "version": "1.3.0",
+  "description": "2D virtual campus with coded layout (no images) + chat bubbles",
   "main": "server.js",
   "scripts": {
     "start": "node server.js",
