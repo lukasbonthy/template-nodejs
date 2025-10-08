@@ -1,5 +1,5 @@
 (() => {
-  const socket = io();
+  const socket = io({ transports: ['websocket', 'polling'] });
 
   const canvas = document.getElementById('game');
   const ctx = canvas.getContext('2d', { alpha: false });
@@ -11,6 +11,7 @@
   window.addEventListener('resize', resize);
   resize();
 
+  const statusEl = document.getElementById('status');
   const nameModal = document.getElementById('nameModal');
   const nameForm = document.getElementById('nameForm');
   const nameInput = document.getElementById('nameInput');
@@ -29,8 +30,9 @@
   let interpTime = 0;
   const SERVER_TICK_MS = 50;
 
-  // Chat display duration
+  // Chat display duration + local echo (so you see the bubble instantly)
   const CHAT_DURATION_MS = 5000;
+  let localEcho = null; // {text, ts}
 
   // Input
   const input = { up: false, down: false, left: false, right: false };
@@ -41,10 +43,18 @@
     ['ArrowRight', 'right'], ['KeyD', 'right']
   ]);
 
+  // ----- Connection status -----
+  const setStatus = (ok, msg) => {
+    statusEl.textContent = ok ? `🟢 ${msg || 'Connected'}` : `🔴 ${msg || 'Disconnected'}`;
+  };
+  socket.on('connect', () => setStatus(true, 'Connected'));
+  socket.on('disconnect', () => setStatus(false, 'Disconnected'));
+  socket.on('connect_error', (err) => setStatus(false, 'Connect error'));
+
   function sendInput() { socket.emit('input', input); }
 
   document.addEventListener('keydown', (e) => {
-    // Open chat on Enter if not typing already
+    // Enter -> focus chat
     if (e.code === 'Enter' && document.activeElement !== chatInput) {
       e.preventDefault();
       chatInput.focus();
@@ -54,7 +64,6 @@
     if (!dir) return;
     if (!input[dir]) { input[dir] = true; sendInput(); }
   });
-
   document.addEventListener('keyup', (e) => {
     const dir = keys.get(e.code);
     if (!dir) return;
@@ -97,9 +106,10 @@
     const text = chatInput.value.trim();
     if (text.length) {
       socket.emit('chat', text);
+      // local echo so you see your bubble immediately
+      localEcho = { text, ts: Date.now() };
       chatInput.value = '';
     }
-    // blur to get back to movement keys quickly
     chatInput.blur();
   });
 
@@ -123,8 +133,7 @@
       chatTs: pb.chatTs
     };
   }
-
-  function clamp(val, min, max) { return Math.max(min, Math.min(max, val)); }
+  function clamp(v, lo, hi) { return Math.max(lo, Math.min(hi, v)); }
 
   function drawGrid(camX, camY) {
     const grid = 80;
@@ -135,7 +144,6 @@
     for (let x = startX; x < canvas.width; x += grid) { ctx.beginPath(); ctx.moveTo(x, 0); ctx.lineTo(x, canvas.height); ctx.stroke(); }
     for (let y = startY; y < canvas.height; y += grid) { ctx.beginPath(); ctx.moveTo(0, y); ctx.lineTo(canvas.width, y); ctx.stroke(); }
   }
-
   function drawObstacles(camX, camY) {
     ctx.fillStyle = '#1a2132';
     ctx.strokeStyle = '#2b3550';
@@ -172,12 +180,21 @@
     ctx.fillStyle = '#e8ecff';
     ctx.fillText(p.name, screenX, screenY - radius - 10);
 
-    // chat bubble (if any)
+    // chat bubble (server state)
     const now = Date.now();
-    if (p.chatText && p.chatTs && now - p.chatTs < CHAT_DURATION_MS) {
-      const t = (now - p.chatTs) / CHAT_DURATION_MS;           // 0 -> 1
-      const alpha = t < 0.8 ? 1 : (1 - (t - 0.8) / 0.2);        // fade out in last 20%
-      drawChatBubble(screenX, screenY, p.chatText, alpha);
+    let text = p.chatText;
+    let ts = p.chatTs;
+
+    // local echo wins until server echoes back (or for 2s)
+    if (isMe && localEcho) {
+      if (!ts || localEcho.ts >= ts) { text = localEcho.text; ts = localEcho.ts; }
+      if (now - localEcho.ts > 2000) localEcho = null; // drop echo after 2s
+    }
+
+    if (text && ts && now - ts < CHAT_DURATION_MS) {
+      const t = (now - ts) / CHAT_DURATION_MS;
+      const alpha = t < 0.8 ? 1 : (1 - (t - 0.8) / 0.2);
+      drawChatBubble(screenX, screenY, text, alpha);
     }
   }
 
@@ -185,13 +202,13 @@
     const words = text.split(/\s+/);
     const lines = [];
     let line = '';
+    ctx.font = '600 14px Inter, sans-serif';
     for (const w of words) {
       const test = line ? line + ' ' + w : w;
       const m = ctx.measureText(test).width;
       if (m <= maxWidth) line = test;
       else {
         if (line) lines.push(line);
-        // If single word longer than max, hard-split
         if (ctx.measureText(w).width > maxWidth) {
           let chunk = '';
           for (const ch of w) {
@@ -200,15 +217,12 @@
             else { lines.push(chunk); chunk = ch; }
           }
           line = chunk;
-        } else {
-          line = w;
-        }
+        } else line = w;
       }
     }
     if (line) lines.push(line);
-    return lines.slice(0, 4); // cap lines
+    return lines.slice(0, 4);
   }
-
   function roundRect(x, y, w, h, r) {
     const rr = Math.min(r, w / 2, h / 2);
     ctx.beginPath();
@@ -219,12 +233,9 @@
     ctx.arcTo(x, y, x + w, y, rr);
     ctx.closePath();
   }
-
   function drawChatBubble(px, py, text, alpha) {
     ctx.save();
     ctx.globalAlpha = Math.max(0, Math.min(1, alpha));
-
-    // bubble styles
     ctx.font = '600 14px Inter, sans-serif';
     ctx.textAlign = 'left';
 
@@ -236,20 +247,16 @@
 
     const contentW = Math.ceil(Math.max(...lines.map(l => ctx.measureText(l).width), 30));
     const contentH = lines.length * lineHeight;
-
     const bubbleW = contentW + paddingX * 2;
     const bubbleH = contentH + paddingY * 2;
 
-    // place to the right of player; if near right edge, flip to left
     let bx = px + radius + 12;
     let by = py - radius - Math.floor(bubbleH / 2);
-
-    if (bx + bubbleW > canvas.width - 8) bx = px - radius - 12 - bubbleW; // flip left
+    if (bx + bubbleW > canvas.width - 8) bx = px - radius - 12 - bubbleW;
     if (bx < 8) bx = 8;
     if (by < 8) by = 8;
     if (by + bubbleH > canvas.height - 8) by = canvas.height - 8 - bubbleH;
 
-    // bubble box
     ctx.fillStyle = 'rgba(16,20,32,0.92)';
     ctx.strokeStyle = '#2b3550';
     ctx.lineWidth = 2;
@@ -257,8 +264,7 @@
     ctx.fill();
     ctx.stroke();
 
-    // tail towards player
-    const tailX = bx < px ? bx + bubbleW : bx; // choose near side
+    const tailX = bx < px ? bx + bubbleW : bx;
     const dir = (bx < px) ? 1 : -1;
     const tailBaseY = clamp(py - 6, by + 8, by + bubbleH - 8);
     ctx.beginPath();
@@ -268,38 +274,27 @@
     ctx.closePath();
     ctx.fill();
 
-    // text
     ctx.fillStyle = '#e8ecff';
     let tx = bx + paddingX;
     let ty = by + paddingY + 13;
-    for (const l of lines) {
-      ctx.fillText(l, tx, ty);
-      ty += lineHeight;
-    }
+    for (const l of lines) { ctx.fillText(l, tx, ty); ty += lineHeight; }
 
     ctx.restore();
   }
 
-  function findMe(state) {
-    return state.players.find(p => p.id === me);
-  }
-
   function render(dt) {
-    // clear
     ctx.fillStyle = '#0b0f14';
     ctx.fillRect(0, 0, canvas.width, canvas.height);
 
     interpTime += dt;
-    const alpha = clamp(interpTime / SERVER_TICK_MS, 0, 1);
+    const alpha = Math.max(0, Math.min(1, interpTime / SERVER_TICK_MS));
 
-    // interpolate players
     const interPlayers = [];
     for (const pb of currentState.players) {
       const pa = lastState.players.find((x) => x.id === pb.id);
       interPlayers.push(lerpPlayer(pa, pb, alpha));
     }
 
-    // camera
     const meP = interPlayers.find(p => p.id === me);
     let camX = 0, camY = 0;
     if (meP) {
@@ -309,10 +304,7 @@
 
     drawGrid(camX, camY);
     drawObstacles(camX, camY);
-
-    for (const p of interPlayers) {
-      drawPlayer(p, camX, camY, p.id === me);
-    }
+    for (const p of interPlayers) drawPlayer(p, camX, camY, p.id === me);
 
     requestAnimationFrame((t) => {
       const now = performance.now();
@@ -320,9 +312,5 @@
       render.lastTime = now;
     });
   }
-
-  requestAnimationFrame((t) => {
-    render.lastTime = t;
-    render(16);
-  });
+  requestAnimationFrame((t) => { render.lastTime = t; render(16); });
 })();
