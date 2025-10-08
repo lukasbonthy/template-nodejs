@@ -24,18 +24,6 @@ html, body { margin: 0; height: 100%; background: #0b0f14; font-family: Inter, s
 @media (min-width: 900px) { .dpad { display: none; } }
 
 /* Chat box */
-.chatbox {
-  position: fixed;
-  left: 50%;
-  transform: translateX(-50%);
-  bottom: 14px;
-  width: min(720px, 92vw);
-  padding: 0;
-  margin: 0;
-}
-#chatInput {
-  width: 100%;
-  padding: 12px 14px;
-  border-radius: 12px;
-  border: 1px solid #2b2e36;
-  background: rgba(17,21
+.chatbox { position: fixed; left: 50%; transform: translateX(-50%); bottom: 14px; width: min(720px, 92vw); padding: 0; margin: 0; }
+#chatInput { width: 100%; padding: 12px 14px; border-radius: 12px; border: 1px solid #2b2e36; background: rgba(17,21,33,0.9); color: var(--ink); outline: none; }
+#chatInput:focus { border-color: #4a79ff; box-shadow: 0 0 0 4px rgba(74,121,255,0.15); }
