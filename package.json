@@ -1,14 +1,14 @@
 {
   "name": "school-world",
-  "version": "1.0.0",
-  "description": "Simple 2D virtual school world with movement and names",
+  "version": "1.1.0",
+  "description": "2D virtual campus with realtime movement + chat bubbles",
   "main": "server.js",
   "scripts": {
     "start": "node server.js",
     "dev": "node server.js"
   },
   "dependencies": {
-    "express": "^4.19.2",
-    "socket.io": "^4.7.5"
+    "express": "4.19.2",
+    "socket.io": "4.7.5"
   }
 }
