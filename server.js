@@ -1,4 +1,5 @@
 const path = require('path');
+const fs = require('fs');
 const express = require('express');
 const http = require('http');
 const { Server } = require('socket.io');
@@ -6,7 +7,7 @@ const { Server } = require('socket.io');
 const app = express();
 const server = http.createServer(app);
 const io = new Server(server, {
-  transports: ['websocket', 'polling'],
+  transports: ['websocket', 'polling'],   // server is fine with either
   path: '/socket.io',
   cors: { origin: '*', methods: ['GET','POST'], credentials: true },
   pingInterval: 25000,
@@ -17,32 +18,25 @@ app.use(express.static(path.join(__dirname, 'public')));
 
 const PORT = process.env.PORT || 3000;
 
-// ---- World config (matches public/campus.png) ----
-const WORLD = {
-  width: 2600,
-  height: 1950,
-  obstacles: [], // Using the map image as background only; no wall collisions yet
-  spawn: { x: 1300, y: 1000 }
-};
+// Load campus layout that we designed in JSON (shared with client)
+const campusPath = path.join(__dirname, 'public', 'campus.json');
+const WORLD = JSON.parse(fs.readFileSync(campusPath, 'utf-8'));
 
 const TICK_RATE = 20;
 const DT = 1 / TICK_RATE;
 const SPEED = 180;
 const PLAYER_RADIUS = 18;
 const NAME_MAX = 16;
-
 const CHAT_MAX_LEN = 140;
 const CHAT_COOLDOWN_MS = 600;
 
-// playerId -> player
-const players = new Map();
-// socketId -> input state
-const inputs = new Map();
+const players = new Map(); // id -> player
+const inputs  = new Map(); // id -> {up,down,left,right}
 
 function sanitizeName(raw) {
   if (typeof raw !== 'string') return 'Student';
   let s = raw.trim();
-  if (s.length === 0) s = 'Student';
+  if (!s) s = 'Student';
   s = s.replace(/[^\w\s\-'.]/g, '');
   if (s.length > NAME_MAX) s = s.slice(0, NAME_MAX);
   return s;
@@ -50,36 +44,63 @@ function sanitizeName(raw) {
 function sanitizeChat(raw) {
   let s = String(raw ?? '').trim();
   if (!s) return '';
+  // Unicode-safe: letters, numbers, punctuation, spaces
   s = s.replace(/[^\p{L}\p{N}\p{P}\p{Zs}]/gu, '');
   if (s.length > CHAT_MAX_LEN) s = s.slice(0, CHAT_MAX_LEN);
   return s;
 }
-function randomColor() {
-  const hue = Math.floor(Math.random() * 360);
-  return `hsl(${hue} 70% 60%)`;
+function randomColor() { const h = Math.floor(Math.random() * 360); return `hsl(${h} 70% 60%)`; }
+
+function rectsIntersectCircle(rx, ry, rw, rh, cx, cy, cr) {
+  const clampedX = Math.max(rx, Math.min(cx, rx + rw));
+  const clampedY = Math.max(ry, Math.min(cy, ry + rh));
+  const dx = cx - clampedX;
+  const dy = cy - clampedY;
+  return (dx*dx + dy*dy) < (cr*cr);
+}
+function collideWithWorld(p, nx, ny) {
+  // clamp to bounds first
+  nx = Math.max(PLAYER_RADIUS, Math.min(WORLD.width  - PLAYER_RADIUS, nx));
+  ny = Math.max(PLAYER_RADIUS, Math.min(WORLD.height - PLAYER_RADIUS, ny));
+
+  // separate-axis collision vs buildings (rects)
+  let x = nx, y = p.y;
+  for (const o of WORLD.obstacles) {
+    if (rectsIntersectCircle(o.x, o.y, o.w, o.h, x, y, PLAYER_RADIUS)) {
+      if (x > o.x + o.w/2) x = o.x + o.w + PLAYER_RADIUS; else x = o.x - PLAYER_RADIUS;
+    }
+  }
+  let fx = x, fy = ny;
+  for (const o of WORLD.obstacles) {
+    if (rectsIntersectCircle(o.x, o.y, o.w, o.h, fx, fy, PLAYER_RADIUS)) {
+      if (fy > o.y + o.h/2) fy = o.y + o.h + PLAYER_RADIUS; else fy = o.y - PLAYER_RADIUS;
+    }
+  }
+  fx = Math.max(PLAYER_RADIUS, Math.min(WORLD.width  - PLAYER_RADIUS, fx));
+  fy = Math.max(PLAYER_RADIUS, Math.min(WORLD.height - PLAYER_RADIUS, fy));
+  return { x: fx, y: fy };
+}
+
+function uniqueName(name) {
+  const taken = new Set(Array.from(players.values()).map(p => p.name));
+  if (!taken.has(name)) return name;
+  let i = 2; while (taken.has(`${name} ${i}`)) i++; return `${name} ${i}`;
 }
 
 io.on('connection', (socket) => {
-  console.log('[io] connection', socket.id);
-
   socket.on('join', (rawName) => {
-    let name = sanitizeName(rawName);
-    // enforce unique
-    const taken = new Set(Array.from(players.values()).map(p => p.name));
-    if (taken.has(name)) { let i = 2; while (taken.has(`${name} ${i}`)) i++; name = `${name} ${i}`; }
-
+    let name = uniqueName(sanitizeName(rawName));
     const p = {
       id: socket.id,
       name,
-      x: WORLD.spawn.x + (Math.random() * 100 - 50),
-      y: WORLD.spawn.y + (Math.random() * 100 - 50),
+      x: WORLD.spawn.x + (Math.random()*120 - 60),
+      y: WORLD.spawn.y + (Math.random()*120 - 60),
       color: randomColor(),
       chat: null,
       _lastChatAt: 0
     };
     players.set(socket.id, p);
-    inputs.set(socket.id, { up: false, down: false, left: false, right: false });
-    console.log('[join]', socket.id, name);
+    inputs.set(socket.id, { up:false, down:false, left:false, right:false });
 
     socket.emit('init', { id: socket.id, world: WORLD, radius: PLAYER_RADIUS });
   });
@@ -87,53 +108,46 @@ io.on('connection', (socket) => {
   socket.on('input', (state) => {
     const inp = inputs.get(socket.id);
     if (!inp) return;
-    inp.up = !!state.up;
-    inp.down = !!state.down;
-    inp.left = !!state.left;
-    inp.right = !!state.right;
+    inp.up = !!state.up; inp.down = !!state.down; inp.left = !!state.left; inp.right = !!state.right;
   });
 
   socket.on('chat', (raw) => {
     const p = players.get(socket.id);
     if (!p) return;
     const now = Date.now();
-    if (now - p._lastChatAt < CHAT_COOLDOWN_MS) return;
+    if (now - p._lastChatAt < CHAT_COOLDOWN_MS) return; // anti-spam
     const text = sanitizeChat(raw);
     if (!text) return;
     p.chat = { text, ts: now };
     p._lastChatAt = now;
-    console.log('[chat]', p.name, ':', text);
   });
 
   socket.on('disconnect', () => {
     players.delete(socket.id);
     inputs.delete(socket.id);
-    console.log('[io] disconnect', socket.id);
   });
 });
 
 setInterval(() => {
   for (const [id, p] of players) {
-    const inp = inputs.get(id);
-    if (!inp) continue;
+    const inp = inputs.get(id); if (!inp) continue;
     let dx = 0, dy = 0;
     if (inp.left) dx -= 1; if (inp.right) dx += 1;
-    if (inp.up) dy -= 1;   if (inp.down) dy += 1;
+    if (inp.up)   dy -= 1; if (inp.down)  dy += 1;
     if (dx || dy) {
       const len = Math.hypot(dx, dy) || 1;
       dx /= len; dy /= len;
-      let nx = p.x + dx * SPEED * DT;
-      let ny = p.y + dy * SPEED * DT;
-      // clamp to world bounds
-      nx = Math.max(18, Math.min(WORLD.width - 18, nx));
-      ny = Math.max(18, Math.min(WORLD.height - 18, ny));
-      p.x = nx; p.y = ny;
+      const nextX = p.x + dx * SPEED * DT;
+      const nextY = p.y + dy * SPEED * DT;
+      const res = collideWithWorld(p, nextX, nextY);
+      p.x = res.x; p.y = res.y;
     }
   }
-  const snapshot = Array.from(players.values()).map(p => ({ id: p.id, name: p.name, x: Math.round(p.x), y: Math.round(p.y), color: p.color, chatText: p.chat?.text || null, chatTs: p.chat?.ts || 0 }));
+  const snapshot = Array.from(players.values()).map(p => ({
+    id: p.id, name: p.name, x: Math.round(p.x), y: Math.round(p.y),
+    color: p.color, chatText: p.chat?.text || null, chatTs: p.chat?.ts || 0
+  }));
   io.emit('state', { t: Date.now(), players: snapshot });
 }, 1000 / TICK_RATE);
 
-server.listen(PORT, () => {
-  console.log(`School world server on http://localhost:${PORT}`);
-});
+server.listen(PORT, () => console.log(`Server on http://localhost:${PORT}`));
