@@ -1,15 +1,14 @@
 {
-  "name": "light-fellowship-chat",
-  "version": "2.1.0",
-  "private": true,
-  "type": "module",
+  "name": "school-world",
+  "version": "1.0.0",
+  "description": "Simple 2D virtual school world with movement and names",
+  "main": "server.js",
   "scripts": {
-    "start": "node server.js"
+    "start": "node server.js",
+    "dev": "node server.js"
   },
   "dependencies": {
-    "compression": "^1.7.4",
     "express": "^4.19.2",
-    "helmet": "^7.1.0",
-    "socket.io": "^4.8.1"
+    "socket.io": "^4.7.5"
   }
 }
