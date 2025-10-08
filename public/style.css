@@ -6,6 +6,7 @@ html, body { margin: 0; height: 100%; background: #0b0f14; font-family: Inter, s
 .hud { position: fixed; top: 12px; left: 12px; padding: 10px 14px; background: var(--panel); border: 1px solid #30333a; border-radius: 12px; backdrop-filter: blur(6px); }
 .title { font-weight: 800; letter-spacing: 0.2px; }
 .hint { font-size: 12px; color: var(--sub); margin-top: 4px; }
+.status { margin-top: 6px; font-size: 12px; }
 
 .name-modal { position: fixed; inset: 0; display: grid; place-items: center; background: linear-gradient(180deg, rgba(0,0,0,0.6), rgba(0,0,0,0.9)); }
 .name-modal .panel { width: min(92vw, 420px); padding: 24px; border-radius: 16px; border: 1px solid #30333a; background: var(--panel); backdrop-filter: blur(6px); }
@@ -20,11 +21,21 @@ html, body { margin: 0; height: 100%; background: #0b0f14; font-family: Inter, s
 .dpad { position: fixed; bottom: 16px; left: 16px; display: grid; gap: 6px; user-select: none; }
 .dpad .mid { display: grid; grid-template-columns: auto auto auto; gap: 6px; }
 .dpad button { width: 60px; height: 60px; border-radius: 12px; border: 1px solid #2b2e36; background: #111521; color: var(--ink); font-size: 20px; font-weight: 700; opacity: 0.85; }
-@media (min-width: 900px) {
-  .dpad { display: none; } /* Hide D-pad on desktop */
-}
+@media (min-width: 900px) { .dpad { display: none; } }
 
-/* Nameplates */
-.nameplate {
-  position: absolute; /* not used (we draw on canvas), kept for ref */
+/* Chat box */
+.chatbox {
+  position: fixed;
+  left: 50%;
+  transform: translateX(-50%);
+  bottom: 14px;
+  width: min(720px, 92vw);
+  padding: 0;
+  margin: 0;
 }
+#chatInput {
+  width: 100%;
+  padding: 12px 14px;
+  border-radius: 12px;
+  border: 1px solid #2b2e36;
+  background: rgba(17,21
