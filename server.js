@@ -7,7 +7,7 @@ const { Server } = require('socket.io');
 const app = express();
 const server = http.createServer(app);
 const io = new Server(server, {
-  transports: ['websocket', 'polling'],   // server is fine with either
+  transports: ['websocket', 'polling'], // client will force polling; this keeps fallback flexible
   path: '/socket.io',
   cors: { origin: '*', methods: ['GET','POST'], credentials: true },
   pingInterval: 25000,
@@ -18,7 +18,7 @@ app.use(express.static(path.join(__dirname, 'public')));
 
 const PORT = process.env.PORT || 3000;
 
-// Load campus layout that we designed in JSON (shared with client)
+// Load campus layout (shared with client)
 const campusPath = path.join(__dirname, 'public', 'campus.json');
 const WORLD = JSON.parse(fs.readFileSync(campusPath, 'utf-8'));
 
@@ -31,12 +31,12 @@ const CHAT_MAX_LEN = 140;
 const CHAT_COOLDOWN_MS = 600;
 
 const players = new Map(); // id -> player
-const inputs  = new Map(); // id -> {up,down,left,right}
+const inputs = new Map();  // id -> {up,down,left,right}
 
 function sanitizeName(raw) {
   if (typeof raw !== 'string') return 'Student';
   let s = raw.trim();
-  if (!s) s = 'Student';
+  if (s.length === 0) s = 'Student';
   s = s.replace(/[^\w\s\-'.]/g, '');
   if (s.length > NAME_MAX) s = s.slice(0, NAME_MAX);
   return s;
@@ -44,7 +44,7 @@ function sanitizeName(raw) {
 function sanitizeChat(raw) {
   let s = String(raw ?? '').trim();
   if (!s) return '';
-  // Unicode-safe: letters, numbers, punctuation, spaces
+  // Unicode-safe: keep letters/numbers/punct/space
   s = s.replace(/[^\p{L}\p{N}\p{P}\p{Zs}]/gu, '');
   if (s.length > CHAT_MAX_LEN) s = s.slice(0, CHAT_MAX_LEN);
   return s;
@@ -56,24 +56,27 @@ function rectsIntersectCircle(rx, ry, rw, rh, cx, cy, cr) {
   const clampedY = Math.max(ry, Math.min(cy, ry + rh));
   const dx = cx - clampedX;
   const dy = cy - clampedY;
-  return (dx*dx + dy*dy) < (cr*cr);
+  return (dx * dx + dy * dy) < (cr * cr);
 }
+
 function collideWithWorld(p, nx, ny) {
-  // clamp to bounds first
+  // Clamp to world bounds first
   nx = Math.max(PLAYER_RADIUS, Math.min(WORLD.width  - PLAYER_RADIUS, nx));
   ny = Math.max(PLAYER_RADIUS, Math.min(WORLD.height - PLAYER_RADIUS, ny));
 
-  // separate-axis collision vs buildings (rects)
+  // Separate axis resolution vs. obstacles (treat buildings as solid)
   let x = nx, y = p.y;
   for (const o of WORLD.obstacles) {
     if (rectsIntersectCircle(o.x, o.y, o.w, o.h, x, y, PLAYER_RADIUS)) {
-      if (x > o.x + o.w/2) x = o.x + o.w + PLAYER_RADIUS; else x = o.x - PLAYER_RADIUS;
+      if (x > o.x + o.w / 2) x = o.x + o.w + PLAYER_RADIUS;
+      else x = o.x - PLAYER_RADIUS;
     }
   }
   let fx = x, fy = ny;
   for (const o of WORLD.obstacles) {
     if (rectsIntersectCircle(o.x, o.y, o.w, o.h, fx, fy, PLAYER_RADIUS)) {
-      if (fy > o.y + o.h/2) fy = o.y + o.h + PLAYER_RADIUS; else fy = o.y - PLAYER_RADIUS;
+      if (fy > o.y + o.h / 2) fy = o.y + o.h + PLAYER_RADIUS;
+      else fy = o.y - PLAYER_RADIUS;
     }
   }
   fx = Math.max(PLAYER_RADIUS, Math.min(WORLD.width  - PLAYER_RADIUS, fx));
@@ -93,14 +96,14 @@ io.on('connection', (socket) => {
     const p = {
       id: socket.id,
       name,
-      x: WORLD.spawn.x + (Math.random()*120 - 60),
-      y: WORLD.spawn.y + (Math.random()*120 - 60),
+      x: WORLD.spawn.x + (Math.random() * 120 - 60),
+      y: WORLD.spawn.y + (Math.random() * 120 - 60),
       color: randomColor(),
       chat: null,
       _lastChatAt: 0
     };
     players.set(socket.id, p);
-    inputs.set(socket.id, { up:false, down:false, left:false, right:false });
+    inputs.set(socket.id, { up: false, down: false, left: false, right: false });
 
     socket.emit('init', { id: socket.id, world: WORLD, radius: PLAYER_RADIUS });
   });
@@ -115,7 +118,7 @@ io.on('connection', (socket) => {
     const p = players.get(socket.id);
     if (!p) return;
     const now = Date.now();
-    if (now - p._lastChatAt < CHAT_COOLDOWN_MS) return; // anti-spam
+    if (now - p._lastChatAt < CHAT_COOLDOWN_MS) return; // basic anti-spam
     const text = sanitizeChat(raw);
     if (!text) return;
     p.chat = { text, ts: now };
@@ -128,12 +131,16 @@ io.on('connection', (socket) => {
   });
 });
 
+// Authoritative tick
 setInterval(() => {
   for (const [id, p] of players) {
-    const inp = inputs.get(id); if (!inp) continue;
+    const inp = inputs.get(id);
+    if (!inp) continue;
     let dx = 0, dy = 0;
-    if (inp.left) dx -= 1; if (inp.right) dx += 1;
-    if (inp.up)   dy -= 1; if (inp.down)  dy += 1;
+    if (inp.left)  dx -= 1;
+    if (inp.right) dx += 1;
+    if (inp.up)    dy -= 1;
+    if (inp.down)  dy += 1;
     if (dx || dy) {
       const len = Math.hypot(dx, dy) || 1;
       dx /= len; dy /= len;
@@ -150,4 +157,6 @@ setInterval(() => {
   io.emit('state', { t: Date.now(), players: snapshot });
 }, 1000 / TICK_RATE);
 
-server.listen(PORT, () => console.log(`Server on http://localhost:${PORT}`));
+server.listen(PORT, () => {
+  console.log(`Server on http://localhost:${PORT}`);
+});
