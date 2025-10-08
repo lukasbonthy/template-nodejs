@@ -1,5 +1,12 @@
 (() => {
-  const socket = io({ transports: ['websocket', 'polling'] });
+  // Force polling to avoid websocket blocks on school/corporate Wi‑Fi.
+  // If you want to try websockets, change transports to ['websocket','polling'] and set upgrade:true.
+  const socket = io('/', {
+    transports: ['polling'],
+    upgrade: false,
+    path: '/socket.io',
+    withCredentials: true
+  });
 
   const canvas = document.getElementById('game');
   const ctx = canvas.getContext('2d', { alpha: false });
@@ -47,7 +54,7 @@
   const setStatus = (ok, msg) => {
     statusEl.textContent = ok ? `🟢 ${msg || 'Connected'}` : `🔴 ${msg || 'Disconnected'}`;
   };
-  socket.on('connect', () => setStatus(true, 'Connected'));
+  socket.on('connect', () => setStatus(true, 'Connected (polling)'));
   socket.on('disconnect', () => setStatus(false, 'Disconnected'));
   socket.on('connect_error', (err) => setStatus(false, 'Connect error'));
 
@@ -180,12 +187,11 @@
     ctx.fillStyle = '#e8ecff';
     ctx.fillText(p.name, screenX, screenY - radius - 10);
 
-    // chat bubble (server state)
+    // chat bubble (server state + local echo for me)
     const now = Date.now();
     let text = p.chatText;
     let ts = p.chatTs;
 
-    // local echo wins until server echoes back (or for 2s)
     if (isMe && localEcho) {
       if (!ts || localEcho.ts >= ts) { text = localEcho.text; ts = localEcho.ts; }
       if (now - localEcho.ts > 2000) localEcho = null; // drop echo after 2s
@@ -266,7 +272,7 @@
 
     const tailX = bx < px ? bx + bubbleW : bx;
     const dir = (bx < px) ? 1 : -1;
-    const tailBaseY = clamp(py - 6, by + 8, by + bubbleH - 8);
+    const tailBaseY = Math.max(by + 8, Math.min(by + bubbleH - 8, py - 6));
     ctx.beginPath();
     ctx.moveTo(tailX, tailBaseY - 6);
     ctx.lineTo(tailX + 10 * dir, py - 4);
@@ -298,8 +304,8 @@
     const meP = interPlayers.find(p => p.id === me);
     let camX = 0, camY = 0;
     if (meP) {
-      camX = clamp(meP.x - canvas.width / 2, 0, world.width - canvas.width);
-      camY = clamp(meP.y - canvas.height / 2, 0, world.height - canvas.height);
+      camX = Math.max(0, Math.min(world.width - canvas.width, meP.x - canvas.width / 2));
+      camY = Math.max(0, Math.min(world.height - canvas.height, meP.y - canvas.height / 2));
     }
 
     drawGrid(camX, camY);
@@ -312,5 +318,6 @@
       render.lastTime = now;
     });
   }
+
   requestAnimationFrame((t) => { render.lastTime = t; render(16); });
 })();
