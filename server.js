@@ -6,26 +6,23 @@ const { Server } = require('socket.io');
 const app = express();
 const server = http.createServer(app);
 const io = new Server(server, {
-  // Helpful for local + simple deploys
-  cors: { origin: true, credentials: true },
-  transports: ['websocket', 'polling']
+  transports: ['websocket', 'polling'],
+  path: '/socket.io',
+  cors: { origin: '*', methods: ['GET','POST'], credentials: true },
+  pingInterval: 25000,
+  pingTimeout: 120000
 });
 
 app.use(express.static(path.join(__dirname, 'public')));
 
 const PORT = process.env.PORT || 3000;
 
-// ---- World config ----
+// ---- World config (matches public/campus.png) ----
 const WORLD = {
-  width: 2400,
-  height: 1800,
-  obstacles: [
-    { x: 600, y: 300, w: 500, h: 260, label: 'Cafeteria' },
-    { x: 1200, y: 700, w: 300, h: 300, label: 'Library' },
-    { x: 300, y: 1100, w: 700, h: 220, label: 'Gym' },
-    { x: 1500, y: 300, w: 200, h: 800, label: 'Hall' }
-  ],
-  spawn: { x: 200, y: 200 }
+  width: 2600,
+  height: 1950,
+  obstacles: [], // Using the map image as background only; no wall collisions yet
+  spawn: { x: 1300, y: 1000 }
 };
 
 const TICK_RATE = 20;
@@ -61,51 +58,21 @@ function randomColor() {
   const hue = Math.floor(Math.random() * 360);
   return `hsl(${hue} 70% 60%)`;
 }
-function rectsIntersectCircle(rx, ry, rw, rh, cx, cy, cr) {
-  const clampedX = Math.max(rx, Math.min(cx, rx + rw));
-  const clampedY = Math.max(ry, Math.min(cy, ry + rh));
-  const dx = cx - clampedX;
-  const dy = cy - clampedY;
-  return (dx * dx + dy * dy) < (cr * cr);
-}
-function collideWithWorld(p, nx, ny) {
-  nx = Math.max(PLAYER_RADIUS, Math.min(WORLD.width - PLAYER_RADIUS, nx));
-  ny = Math.max(PLAYER_RADIUS, Math.min(WORLD.height - PLAYER_RADIUS, ny));
-
-  let tryX = nx, tryY = p.y;
-  for (const o of WORLD.obstacles) {
-    if (rectsIntersectCircle(o.x, o.y, o.w, o.h, tryX, tryY, PLAYER_RADIUS)) {
-      if (tryX > o.x + o.w / 2) tryX = o.x + o.w + PLAYER_RADIUS;
-      else tryX = o.x - PLAYER_RADIUS;
-    }
-  }
-  let finalX = tryX, finalY = ny;
-  for (const o of WORLD.obstacles) {
-    if (rectsIntersectCircle(o.x, o.y, o.w, o.h, finalX, finalY, PLAYER_RADIUS)) {
-      if (finalY > o.y + o.h / 2) finalY = o.y + o.h + PLAYER_RADIUS;
-      else finalY = o.y - PLAYER_RADIUS;
-    }
-  }
-  finalX = Math.max(PLAYER_RADIUS, Math.min(WORLD.width - PLAYER_RADIUS, finalX));
-  finalY = Math.max(PLAYER_RADIUS, Math.min(WORLD.height - PLAYER_RADIUS, finalY));
-  return { x: finalX, y: finalY };
-}
-function enforceUniqueName(name) {
-  const taken = new Set(Array.from(players.values()).map(p => p.name));
-  if (!taken.has(name)) return name;
-  let i = 2; while (taken.has(`${name} ${i}`)) i++; return `${name} ${i}`;
-}
 
 io.on('connection', (socket) => {
   console.log('[io] connection', socket.id);
 
   socket.on('join', (rawName) => {
-    let name = enforceUniqueName(sanitizeName(rawName));
+    let name = sanitizeName(rawName);
+    // enforce unique
+    const taken = new Set(Array.from(players.values()).map(p => p.name));
+    if (taken.has(name)) { let i = 2; while (taken.has(`${name} ${i}`)) i++; name = `${name} ${i}`; }
+
     const p = {
       id: socket.id,
       name,
-      x: WORLD.spawn.x + Math.random() * 200,
-      y: WORLD.spawn.y + Math.random() * 200,
+      x: WORLD.spawn.x + (Math.random() * 100 - 50),
+      y: WORLD.spawn.y + (Math.random() * 100 - 50),
       color: randomColor(),
       chat: null,
       _lastChatAt: 0
@@ -155,16 +122,15 @@ setInterval(() => {
     if (dx || dy) {
       const len = Math.hypot(dx, dy) || 1;
       dx /= len; dy /= len;
-      const nextX = p.x + dx * SPEED * DT;
-      const nextY = p.y + dy * SPEED * DT;
-      const resolved = collideWithWorld(p, nextX, nextY);
-      p.x = resolved.x; p.y = resolved.y;
+      let nx = p.x + dx * SPEED * DT;
+      let ny = p.y + dy * SPEED * DT;
+      // clamp to world bounds
+      nx = Math.max(18, Math.min(WORLD.width - 18, nx));
+      ny = Math.max(18, Math.min(WORLD.height - 18, ny));
+      p.x = nx; p.y = ny;
     }
   }
-  const snapshot = Array.from(players.values()).map(p => ({
-    id: p.id, name: p.name, x: Math.round(p.x), y: Math.round(p.y),
-    color: p.color, chatText: p.chat?.text || null, chatTs: p.chat?.ts || 0
-  }));
+  const snapshot = Array.from(players.values()).map(p => ({ id: p.id, name: p.name, x: Math.round(p.x), y: Math.round(p.y), color: p.color, chatText: p.chat?.text || null, chatTs: p.chat?.ts || 0 }));
   io.emit('state', { t: Date.now(), players: snapshot });
 }, 1000 / TICK_RATE);
 
