@@ -1,7 +1,6 @@
 (() => {
   const socket = io();
 
-  // Canvas setup
   const canvas = document.getElementById('game');
   const ctx = canvas.getContext('2d', { alpha: false });
 
@@ -12,22 +11,26 @@
   window.addEventListener('resize', resize);
   resize();
 
-  // UI elements
   const nameModal = document.getElementById('nameModal');
   const nameForm = document.getElementById('nameForm');
   const nameInput = document.getElementById('nameInput');
-
   const dpad = document.getElementById('dpad');
+
+  // Chat UI
+  const chatForm = document.getElementById('chatForm');
+  const chatInput = document.getElementById('chatInput');
 
   let me = null;
   let world = { width: 2000, height: 1200, obstacles: [] };
   let radius = 18;
 
-  // State snapshots (for smoother rendering)
   let lastState = { t: 0, players: [] };
   let currentState = { t: 0, players: [] };
-  let interpTime = 0; // ms
+  let interpTime = 0;
   const SERVER_TICK_MS = 50;
+
+  // Chat display duration
+  const CHAT_DURATION_MS = 5000;
 
   // Input
   const input = { up: false, down: false, left: false, right: false };
@@ -38,29 +41,27 @@
     ['ArrowRight', 'right'], ['KeyD', 'right']
   ]);
 
-  function sendInput() {
-    socket.emit('input', input);
-  }
+  function sendInput() { socket.emit('input', input); }
 
   document.addEventListener('keydown', (e) => {
+    // Open chat on Enter if not typing already
+    if (e.code === 'Enter' && document.activeElement !== chatInput) {
+      e.preventDefault();
+      chatInput.focus();
+      return;
+    }
     const dir = keys.get(e.code);
     if (!dir) return;
-    if (!input[dir]) {
-      input[dir] = true;
-      sendInput();
-    }
+    if (!input[dir]) { input[dir] = true; sendInput(); }
   });
 
   document.addEventListener('keyup', (e) => {
     const dir = keys.get(e.code);
     if (!dir) return;
-    if (input[dir]) {
-      input[dir] = false;
-      sendInput();
-    }
+    if (input[dir]) { input[dir] = false; sendInput(); }
   });
 
-  // D-pad touch handlers
+  // D-pad handlers
   dpad.querySelectorAll('button').forEach(btn => {
     const dir = btn.dataset.dir;
     const on = (e) => { e.preventDefault(); if (!input[dir]) { input[dir] = true; sendInput(); } };
@@ -73,24 +74,33 @@
     btn.addEventListener('mouseleave', off);
   });
 
-  // Modal submit
+  // Name modal
   nameForm.addEventListener('submit', (e) => {
     e.preventDefault();
     const raw = nameInput.value || '';
     socket.emit('join', raw);
   });
-
-  // Persist suggested name between reloads
   nameInput.value = localStorage.getItem('campusName') || '';
 
   socket.on('init', (payload) => {
     me = payload.id;
     world = payload.world;
     radius = payload.radius || 18;
-    // store name suggestion
     const val = nameInput.value.trim();
     if (val) localStorage.setItem('campusName', val);
     nameModal.style.display = 'none';
+  });
+
+  // Chat sending
+  chatForm.addEventListener('submit', (e) => {
+    e.preventDefault();
+    const text = chatInput.value.trim();
+    if (text.length) {
+      socket.emit('chat', text);
+      chatInput.value = '';
+    }
+    // blur to get back to movement keys quickly
+    chatInput.blur();
   });
 
   socket.on('state', (s) => {
@@ -98,10 +108,6 @@
     currentState = s;
     interpTime = 0;
   });
-
-  function findMe(state) {
-    return state.players.find(p => p.id === me);
-  }
 
   function lerp(a, b, t) { return a + (b - a) * t; }
   function lerpPlayer(pa, pb, t) {
@@ -112,9 +118,13 @@
       name: pb.name,
       color: pb.color,
       x: lerp(pa.x, pb.x, t),
-      y: lerp(pa.y, pb.y, t)
+      y: lerp(pa.y, pb.y, t),
+      chatText: pb.chatText,
+      chatTs: pb.chatTs
     };
   }
+
+  function clamp(val, min, max) { return Math.max(min, Math.min(max, val)); }
 
   function drawGrid(camX, camY) {
     const grid = 80;
@@ -122,12 +132,8 @@
     const startX = -((camX % grid) + grid) % grid;
     const startY = -((camY % grid) + grid) % grid;
     ctx.strokeStyle = '#0f1725';
-    for (let x = startX; x < canvas.width; x += grid) {
-      ctx.beginPath(); ctx.moveTo(x, 0); ctx.lineTo(x, canvas.height); ctx.stroke();
-    }
-    for (let y = startY; y < canvas.height; y += grid) {
-      ctx.beginPath(); ctx.moveTo(0, y); ctx.lineTo(canvas.width, y); ctx.stroke();
-    }
+    for (let x = startX; x < canvas.width; x += grid) { ctx.beginPath(); ctx.moveTo(x, 0); ctx.lineTo(x, canvas.height); ctx.stroke(); }
+    for (let y = startY; y < canvas.height; y += grid) { ctx.beginPath(); ctx.moveTo(0, y); ctx.lineTo(canvas.width, y); ctx.stroke(); }
   }
 
   function drawObstacles(camX, camY) {
@@ -139,8 +145,6 @@
       const sy = Math.round(o.y - camY);
       ctx.fillRect(sx, sy, o.w, o.h);
       ctx.strokeRect(sx, sy, o.w, o.h);
-
-      // label
       ctx.fillStyle = '#aab6e5';
       ctx.font = '600 14px Inter, sans-serif';
       ctx.textAlign = 'center';
@@ -152,12 +156,12 @@
   function drawPlayer(p, camX, camY, isMe) {
     const screenX = Math.round(p.x - camX);
     const screenY = Math.round(p.y - camY);
+
     // body
     ctx.beginPath();
     ctx.arc(screenX, screenY, radius, 0, Math.PI * 2);
     ctx.fillStyle = isMe ? '#ffffff' : p.color || '#7dafff';
     ctx.fill();
-    // outline
     ctx.lineWidth = isMe ? 3 : 2;
     ctx.strokeStyle = isMe ? '#3b82f6' : '#111827';
     ctx.stroke();
@@ -167,28 +171,135 @@
     ctx.textAlign = 'center';
     ctx.fillStyle = '#e8ecff';
     ctx.fillText(p.name, screenX, screenY - radius - 10);
+
+    // chat bubble (if any)
+    const now = Date.now();
+    if (p.chatText && p.chatTs && now - p.chatTs < CHAT_DURATION_MS) {
+      const t = (now - p.chatTs) / CHAT_DURATION_MS;           // 0 -> 1
+      const alpha = t < 0.8 ? 1 : (1 - (t - 0.8) / 0.2);        // fade out in last 20%
+      drawChatBubble(screenX, screenY, p.chatText, alpha);
+    }
   }
 
-  function clamp(val, min, max) { return Math.max(min, Math.min(max, val)); }
+  function wrapLines(text, maxWidth) {
+    const words = text.split(/\s+/);
+    const lines = [];
+    let line = '';
+    for (const w of words) {
+      const test = line ? line + ' ' + w : w;
+      const m = ctx.measureText(test).width;
+      if (m <= maxWidth) line = test;
+      else {
+        if (line) lines.push(line);
+        // If single word longer than max, hard-split
+        if (ctx.measureText(w).width > maxWidth) {
+          let chunk = '';
+          for (const ch of w) {
+            const tryChunk = chunk + ch;
+            if (ctx.measureText(tryChunk).width <= maxWidth) chunk = tryChunk;
+            else { lines.push(chunk); chunk = ch; }
+          }
+          line = chunk;
+        } else {
+          line = w;
+        }
+      }
+    }
+    if (line) lines.push(line);
+    return lines.slice(0, 4); // cap lines
+  }
+
+  function roundRect(x, y, w, h, r) {
+    const rr = Math.min(r, w / 2, h / 2);
+    ctx.beginPath();
+    ctx.moveTo(x + rr, y);
+    ctx.arcTo(x + w, y, x + w, y + h, rr);
+    ctx.arcTo(x + w, y + h, x, y + h, rr);
+    ctx.arcTo(x, y + h, x, y, rr);
+    ctx.arcTo(x, y, x + w, y, rr);
+    ctx.closePath();
+  }
+
+  function drawChatBubble(px, py, text, alpha) {
+    ctx.save();
+    ctx.globalAlpha = Math.max(0, Math.min(1, alpha));
+
+    // bubble styles
+    ctx.font = '600 14px Inter, sans-serif';
+    ctx.textAlign = 'left';
+
+    const maxTextWidth = 220;
+    const lines = wrapLines(text, maxTextWidth);
+    const lineHeight = 18;
+    const paddingX = 10;
+    const paddingY = 8;
+
+    const contentW = Math.ceil(Math.max(...lines.map(l => ctx.measureText(l).width), 30));
+    const contentH = lines.length * lineHeight;
+
+    const bubbleW = contentW + paddingX * 2;
+    const bubbleH = contentH + paddingY * 2;
+
+    // place to the right of player; if near right edge, flip to left
+    let bx = px + radius + 12;
+    let by = py - radius - Math.floor(bubbleH / 2);
+
+    if (bx + bubbleW > canvas.width - 8) bx = px - radius - 12 - bubbleW; // flip left
+    if (bx < 8) bx = 8;
+    if (by < 8) by = 8;
+    if (by + bubbleH > canvas.height - 8) by = canvas.height - 8 - bubbleH;
+
+    // bubble box
+    ctx.fillStyle = 'rgba(16,20,32,0.92)';
+    ctx.strokeStyle = '#2b3550';
+    ctx.lineWidth = 2;
+    roundRect(bx, by, bubbleW, bubbleH, 10);
+    ctx.fill();
+    ctx.stroke();
+
+    // tail towards player
+    const tailX = bx < px ? bx + bubbleW : bx; // choose near side
+    const dir = (bx < px) ? 1 : -1;
+    const tailBaseY = clamp(py - 6, by + 8, by + bubbleH - 8);
+    ctx.beginPath();
+    ctx.moveTo(tailX, tailBaseY - 6);
+    ctx.lineTo(tailX + 10 * dir, py - 4);
+    ctx.lineTo(tailX, tailBaseY + 6);
+    ctx.closePath();
+    ctx.fill();
+
+    // text
+    ctx.fillStyle = '#e8ecff';
+    let tx = bx + paddingX;
+    let ty = by + paddingY + 13;
+    for (const l of lines) {
+      ctx.fillText(l, tx, ty);
+      ty += lineHeight;
+    }
+
+    ctx.restore();
+  }
+
+  function findMe(state) {
+    return state.players.find(p => p.id === me);
+  }
 
   function render(dt) {
-    // Clear background
+    // clear
     ctx.fillStyle = '#0b0f14';
     ctx.fillRect(0, 0, canvas.width, canvas.height);
 
-    // Interpolation factor between last/current states
-    // We try to render slightly behind to smooth jitter
     interpTime += dt;
     const alpha = clamp(interpTime / SERVER_TICK_MS, 0, 1);
 
-    // Build an interpolated state
+    // interpolate players
     const interPlayers = [];
     for (const pb of currentState.players) {
       const pa = lastState.players.find((x) => x.id === pb.id);
       interPlayers.push(lerpPlayer(pa, pb, alpha));
     }
 
-    // Camera centered on me
+    // camera
     const meP = interPlayers.find(p => p.id === me);
     let camX = 0, camY = 0;
     if (meP) {
@@ -199,7 +310,6 @@
     drawGrid(camX, camY);
     drawObstacles(camX, camY);
 
-    // Draw players
     for (const p of interPlayers) {
       drawPlayer(p, camX, camY, p.id === me);
     }
@@ -211,7 +321,6 @@
     });
   }
 
-  // Kick off render loop
   requestAnimationFrame((t) => {
     render.lastTime = t;
     render(16);
