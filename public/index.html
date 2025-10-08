@@ -14,7 +14,8 @@
 
   <div class="hud">
     <div class="title">Virtual Campus</div>
-    <div class="hint">WASD / Arrows to move • Tap D-pad on mobile</div>
+    <div class="hint">WASD/Arrows to move • Enter to chat • Tap D-pad on mobile</div>
+    <div id="status" class="status">🔴 Disconnected</div>
   </div>
 
   <div class="name-modal" id="nameModal">
@@ -38,6 +39,12 @@
     </div>
   </div>
 
+  <!-- Chat input -->
+  <form id="chatForm" class="chatbox" autocomplete="off">
+    <input id="chatInput" maxlength="140" placeholder="Type and press Enter…" />
+  </form>
+
+  <!-- IMPORTANT: load socket.io client BEFORE client.js -->
   <script src="/socket.io/socket.io.js"></script>
   <script src="client.js"></script>
 </body>
