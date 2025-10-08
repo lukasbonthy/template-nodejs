@@ -171,4 +171,11 @@ setInterval(() => {
   }
 
   const snapshot = Array.from(players.values()).map(p => ({
-    id: p.id, name: p.name, x: Math.round(p.x), y: Math.round(p.y), color
+    id: p.id, name: p.name, x: Math.round(p.x), y: Math.round(p.y), color: p.color
+  }));
+  io.emit('state', { t: Date.now(), players: snapshot });
+}, 1000 / TICK_RATE);
+
+server.listen(PORT, () => {
+  console.log(`School world server on http://localhost:${PORT}`);
+});
