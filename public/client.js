@@ -1,4 +1,5 @@
 (() => {
+  // Force polling (works on school Wi-Fi that blocks websockets)
   const socket = io('/', {
     transports: ['polling'],
     upgrade: false,
@@ -25,14 +26,8 @@
   const chatForm = document.getElementById('chatForm');
   const chatInput = document.getElementById('chatInput');
 
-  // Load campus image
-  const bgImg = new Image();
-  bgImg.src = 'campus.png';
-  let bgReady = false;
-  bgImg.onload = () => { bgReady = true; };
-
   let me = null;
-  let world = { width: 2600, height: 1950, obstacles: [] };
+  let world = { width: 2000, height: 1200, obstacles: [] };
   let radius = 18;
 
   let lastState = { t: 0, players: [] };
@@ -43,6 +38,9 @@
   const CHAT_DURATION_MS = 5000;
   let localEcho = null;
 
+  // Load campus layout (same JSON the server used)
+  fetch('campus.json').then(r => r.json()).then(json => { world = json; });
+
   const input = { up: false, down: false, left: false, right: false };
   const keys = new Map([
     ['ArrowUp', 'up'], ['KeyW', 'up'],
@@ -52,7 +50,7 @@
   ]);
 
   const setStatus = (ok, msg) => {
-    statusEl.textContent = ok ? `ð¢ ${msg || 'Connected'}` : `ð´ ${msg || 'Disconnected'}`;
+    statusEl.textContent = ok ? `🟢 ${msg || 'Connected'}` : `🔴 ${msg || 'Disconnected'}`;
   };
   socket.on('connect', () => setStatus(true, 'Connected (polling)'));
   socket.on('disconnect', () => setStatus(false, 'Disconnected'));
@@ -76,6 +74,7 @@
     if (input[dir]) { input[dir] = false; sendInput(); }
   });
 
+  // D-pad
   dpad.querySelectorAll('button').forEach(btn => {
     const dir = btn.dataset.dir;
     const on = (e) => { e.preventDefault(); if (!input[dir]) { input[dir] = true; sendInput(); } };
@@ -88,28 +87,28 @@
     btn.addEventListener('mouseleave', off);
   });
 
+  // Join
   nameForm.addEventListener('submit', (e) => {
     e.preventDefault();
     const raw = nameInput.value || '';
     socket.emit('join', raw);
   });
   nameInput.value = localStorage.getItem('campusName') || '';
-
   socket.on('init', (payload) => {
     me = payload.id;
-    world = payload.world;
     radius = payload.radius || 18;
     const val = nameInput.value.trim();
     if (val) localStorage.setItem('campusName', val);
     nameModal.style.display = 'none';
   });
 
+  // Chat
   chatForm.addEventListener('submit', (e) => {
     e.preventDefault();
     const text = chatInput.value.trim();
     if (text.length) {
       socket.emit('chat', text);
-      localEcho = { text, ts: Date.now() };
+      localEcho = { text, ts: Date.now() }; // show immediately
       chatInput.value = '';
     }
     chatInput.blur();
@@ -121,6 +120,7 @@
     interpTime = 0;
   });
 
+  // ---- Rendering helpers ----
   function lerp(a, b, t) { return a + (b - a) * t; }
   function lerpPlayer(pa, pb, t) {
     if (!pa) return pb;
@@ -137,18 +137,31 @@
   }
   function clamp(v, lo, hi) { return Math.max(lo, Math.min(hi, v)); }
 
-  function drawBackground(camX, camY) {
-    if (!bgReady) return;
-    const sx = Math.floor(camX);
-    const sy = Math.floor(camY);
-    const sw = Math.min(canvas.width, bgImg.width - sx);
-    const sh = Math.min(canvas.height, bgImg.height - sy);
-    if (sw > 0 && sh > 0) {
-      ctx.drawImage(bgImg, sx, sy, sw, sh, 0, 0, sw, sh);
-    } else {
-      // fallback: fill background
-      ctx.fillStyle = '#0b0f14';
-      ctx.fillRect(0, 0, canvas.width, canvas.height);
+  function drawGrid(camX, camY) {
+    const grid = 80;
+    ctx.lineWidth = 1;
+    const startX = -((camX % grid) + grid) % grid;
+    const startY = -((camY % grid) + grid) % grid;
+    ctx.strokeStyle = '#0f1725';
+    for (let x = startX; x < canvas.width; x += grid) { ctx.beginPath(); ctx.moveTo(x, 0); ctx.lineTo(x, canvas.height); ctx.stroke(); }
+    for (let y = startY; y < canvas.height; y += grid) { ctx.beginPath(); ctx.moveTo(0, y); ctx.lineTo(canvas.width, y); ctx.stroke(); }
+  }
+
+  function drawObstacles(camX, camY) {
+    ctx.lineWidth = 2;
+    for (const o of (world.obstacles || [])) {
+      const sx = Math.round(o.x - camX);
+      const sy = Math.round(o.y - camY);
+      ctx.fillStyle = '#20283a';
+      ctx.fillRect(sx, sy, o.w, o.h);
+      ctx.strokeStyle = '#2f3c5a';
+      ctx.strokeRect(sx, sy, o.w, o.h);
+      ctx.fillStyle = '#aab6e5';
+      ctx.font = '600 14px Inter, sans-serif';
+      ctx.textAlign = 'center';
+      const lines = String(o.label || '').split('\n');
+      let ty = sy + 18;
+      for (const line of lines) { ctx.fillText(line, sx + o.w / 2, ty); ty += 18; }
     }
   }
 
@@ -156,7 +169,7 @@
     const screenX = Math.round(p.x - camX);
     const screenY = Math.round(p.y - camY);
 
-    // shadow for visibility on the map
+    // shadow
     ctx.beginPath();
     ctx.arc(screenX + 2, screenY + 2, radius + 1, 0, Math.PI * 2);
     ctx.fillStyle = 'rgba(0,0,0,0.25)';
@@ -171,7 +184,7 @@
     ctx.strokeStyle = isMe ? '#3b82f6' : '#111827';
     ctx.stroke();
 
-    // nameplate (with outline for legibility)
+    // nameplate with outline
     ctx.font = '600 14px Inter, sans-serif';
     ctx.textAlign = 'center';
     ctx.lineWidth = 4;
@@ -280,7 +293,11 @@
   }
 
   function render(dt) {
-    // Camera follow
+    // clear
+    ctx.fillStyle = '#0b0f14';
+    ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+    // interpolate state -> smoother animations
     interpTime += dt;
     const alpha = Math.max(0, Math.min(1, interpTime / SERVER_TICK_MS));
 
@@ -290,22 +307,16 @@
       interPlayers.push(lerpPlayer(pa, pb, alpha));
     }
 
+    // camera
     const meP = interPlayers.find(p => p.id === me);
     let camX = 0, camY = 0;
     if (meP) {
-      camX = Math.max(0, Math.min(world.width - canvas.width, meP.x - canvas.width / 2));
-      camY = Math.max(0, Math.min(world.height - canvas.height, meP.y - canvas.height / 2));
+      camX = clamp(meP.x - canvas.width  / 2, 0, (world.width  || 2000) - canvas.width);
+      camY = clamp(meP.y - canvas.height / 2, 0, (world.height || 1200) - canvas.height);
     }
 
-    // Draw campus background
-    drawBackground(camX, camY);
-
-    // If bg not ready yet, ensure a base fill
-    if (!bgReady) {
-      ctx.fillStyle = '#0b0f14';
-      ctx.fillRect(0, 0, canvas.width, canvas.height);
-    }
-
+    drawGrid(camX, camY);
+    drawObstacles(camX, camY);
     for (const p of interPlayers) drawPlayer(p, camX, camY, p.id === me);
 
     requestAnimationFrame((t) => {
