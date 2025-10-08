@@ -1,6 +1,4 @@
 (() => {
-  // Force polling to avoid websocket blocks on school/corporate Wi‑Fi.
-  // If you want to try websockets, change transports to ['websocket','polling'] and set upgrade:true.
   const socket = io('/', {
     transports: ['polling'],
     upgrade: false,
@@ -24,12 +22,17 @@
   const nameInput = document.getElementById('nameInput');
   const dpad = document.getElementById('dpad');
 
-  // Chat UI
   const chatForm = document.getElementById('chatForm');
   const chatInput = document.getElementById('chatInput');
 
+  // Load campus image
+  const bgImg = new Image();
+  bgImg.src = 'campus.png';
+  let bgReady = false;
+  bgImg.onload = () => { bgReady = true; };
+
   let me = null;
-  let world = { width: 2000, height: 1200, obstacles: [] };
+  let world = { width: 2600, height: 1950, obstacles: [] };
   let radius = 18;
 
   let lastState = { t: 0, players: [] };
@@ -37,11 +40,9 @@
   let interpTime = 0;
   const SERVER_TICK_MS = 50;
 
-  // Chat display duration + local echo (so you see the bubble instantly)
   const CHAT_DURATION_MS = 5000;
-  let localEcho = null; // {text, ts}
+  let localEcho = null;
 
-  // Input
   const input = { up: false, down: false, left: false, right: false };
   const keys = new Map([
     ['ArrowUp', 'up'], ['KeyW', 'up'],
@@ -50,18 +51,16 @@
     ['ArrowRight', 'right'], ['KeyD', 'right']
   ]);
 
-  // ----- Connection status -----
   const setStatus = (ok, msg) => {
-    statusEl.textContent = ok ? `🟢 ${msg || 'Connected'}` : `🔴 ${msg || 'Disconnected'}`;
+    statusEl.textContent = ok ? `ð¢ ${msg || 'Connected'}` : `ð´ ${msg || 'Disconnected'}`;
   };
   socket.on('connect', () => setStatus(true, 'Connected (polling)'));
   socket.on('disconnect', () => setStatus(false, 'Disconnected'));
-  socket.on('connect_error', (err) => setStatus(false, 'Connect error'));
+  socket.on('connect_error', () => setStatus(false, 'Connect error'));
 
   function sendInput() { socket.emit('input', input); }
 
   document.addEventListener('keydown', (e) => {
-    // Enter -> focus chat
     if (e.code === 'Enter' && document.activeElement !== chatInput) {
       e.preventDefault();
       chatInput.focus();
@@ -77,7 +76,6 @@
     if (input[dir]) { input[dir] = false; sendInput(); }
   });
 
-  // D-pad handlers
   dpad.querySelectorAll('button').forEach(btn => {
     const dir = btn.dataset.dir;
     const on = (e) => { e.preventDefault(); if (!input[dir]) { input[dir] = true; sendInput(); } };
@@ -90,7 +88,6 @@
     btn.addEventListener('mouseleave', off);
   });
 
-  // Name modal
   nameForm.addEventListener('submit', (e) => {
     e.preventDefault();
     const raw = nameInput.value || '';
@@ -107,13 +104,11 @@
     nameModal.style.display = 'none';
   });
 
-  // Chat sending
   chatForm.addEventListener('submit', (e) => {
     e.preventDefault();
     const text = chatInput.value.trim();
     if (text.length) {
       socket.emit('chat', text);
-      // local echo so you see your bubble immediately
       localEcho = { text, ts: Date.now() };
       chatInput.value = '';
     }
@@ -142,35 +137,30 @@
   }
   function clamp(v, lo, hi) { return Math.max(lo, Math.min(hi, v)); }
 
-  function drawGrid(camX, camY) {
-    const grid = 80;
-    ctx.lineWidth = 1;
-    const startX = -((camX % grid) + grid) % grid;
-    const startY = -((camY % grid) + grid) % grid;
-    ctx.strokeStyle = '#0f1725';
-    for (let x = startX; x < canvas.width; x += grid) { ctx.beginPath(); ctx.moveTo(x, 0); ctx.lineTo(x, canvas.height); ctx.stroke(); }
-    for (let y = startY; y < canvas.height; y += grid) { ctx.beginPath(); ctx.moveTo(0, y); ctx.lineTo(canvas.width, y); ctx.stroke(); }
-  }
-  function drawObstacles(camX, camY) {
-    ctx.fillStyle = '#1a2132';
-    ctx.strokeStyle = '#2b3550';
-    ctx.lineWidth = 2;
-    for (const o of world.obstacles) {
-      const sx = Math.round(o.x - camX);
-      const sy = Math.round(o.y - camY);
-      ctx.fillRect(sx, sy, o.w, o.h);
-      ctx.strokeRect(sx, sy, o.w, o.h);
-      ctx.fillStyle = '#aab6e5';
-      ctx.font = '600 14px Inter, sans-serif';
-      ctx.textAlign = 'center';
-      ctx.fillText(o.label || '', sx + o.w / 2, sy + 18);
-      ctx.fillStyle = '#1a2132';
+  function drawBackground(camX, camY) {
+    if (!bgReady) return;
+    const sx = Math.floor(camX);
+    const sy = Math.floor(camY);
+    const sw = Math.min(canvas.width, bgImg.width - sx);
+    const sh = Math.min(canvas.height, bgImg.height - sy);
+    if (sw > 0 && sh > 0) {
+      ctx.drawImage(bgImg, sx, sy, sw, sh, 0, 0, sw, sh);
+    } else {
+      // fallback: fill background
+      ctx.fillStyle = '#0b0f14';
+      ctx.fillRect(0, 0, canvas.width, canvas.height);
     }
   }
 
   function drawPlayer(p, camX, camY, isMe) {
     const screenX = Math.round(p.x - camX);
     const screenY = Math.round(p.y - camY);
+
+    // shadow for visibility on the map
+    ctx.beginPath();
+    ctx.arc(screenX + 2, screenY + 2, radius + 1, 0, Math.PI * 2);
+    ctx.fillStyle = 'rgba(0,0,0,0.25)';
+    ctx.fill();
 
     // body
     ctx.beginPath();
@@ -181,22 +171,23 @@
     ctx.strokeStyle = isMe ? '#3b82f6' : '#111827';
     ctx.stroke();
 
-    // nameplate
+    // nameplate (with outline for legibility)
     ctx.font = '600 14px Inter, sans-serif';
     ctx.textAlign = 'center';
+    ctx.lineWidth = 4;
+    ctx.strokeStyle = 'rgba(0,0,0,0.6)';
+    ctx.strokeText(p.name, screenX, screenY - radius - 10);
     ctx.fillStyle = '#e8ecff';
     ctx.fillText(p.name, screenX, screenY - radius - 10);
 
-    // chat bubble (server state + local echo for me)
+    // chat bubble
     const now = Date.now();
     let text = p.chatText;
     let ts = p.chatTs;
-
     if (isMe && localEcho) {
       if (!ts || localEcho.ts >= ts) { text = localEcho.text; ts = localEcho.ts; }
-      if (now - localEcho.ts > 2000) localEcho = null; // drop echo after 2s
+      if (now - localEcho.ts > 2000) localEcho = null;
     }
-
     if (text && ts && now - ts < CHAT_DURATION_MS) {
       const t = (now - ts) / CHAT_DURATION_MS;
       const alpha = t < 0.8 ? 1 : (1 - (t - 0.8) / 0.2);
@@ -289,9 +280,7 @@
   }
 
   function render(dt) {
-    ctx.fillStyle = '#0b0f14';
-    ctx.fillRect(0, 0, canvas.width, canvas.height);
-
+    // Camera follow
     interpTime += dt;
     const alpha = Math.max(0, Math.min(1, interpTime / SERVER_TICK_MS));
 
@@ -308,8 +297,15 @@
       camY = Math.max(0, Math.min(world.height - canvas.height, meP.y - canvas.height / 2));
     }
 
-    drawGrid(camX, camY);
-    drawObstacles(camX, camY);
+    // Draw campus background
+    drawBackground(camX, camY);
+
+    // If bg not ready yet, ensure a base fill
+    if (!bgReady) {
+      ctx.fillStyle = '#0b0f14';
+      ctx.fillRect(0, 0, canvas.width, canvas.height);
+    }
+
     for (const p of interPlayers) drawPlayer(p, camX, camY, p.id === me);
 
     requestAnimationFrame((t) => {
