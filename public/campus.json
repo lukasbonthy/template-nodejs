@@ -4,37 +4,48 @@
   "spawn": { "x": 1300, "y": 820 },
 
   "obstacles": [
-    /* --- TOP-LEFT / LEFT --- */
-    { "x": 520,  "y": 120,  "w": 340, "h": 260, "label": "GYM 353" },
-    { "x": 520,  "y": 380,  "w": 340, "h": 100, "label": "GYM LOBBY" },
-    { "x": 220,  "y": 700,  "w": 220, "h": 160, "label": "BAND ROOM 340" },
+    /* ---------- TOP-LEFT ---------- */
+    { "x": 520,  "y":  80, "w": 360, "h": 300, "label": "GYM 353" },
+    { "x": 520,  "y": 380, "w": 360, "h": 110, "label": "GYM LOBBY 353A" },
 
-    /* B WING (long left hallway block) */
-    { "x": 360,  "y": 660,  "w": 960, "h": 220, "label": "B WING" },
+    /* Band room off the left end of B Wing */
+    { "x": 160,  "y": 690, "w": 220, "h": 150, "label": "BAND ROOM 340" },
 
-    /* --- CENTER / AROUND A-WING --- */
-    { "x": 1240, "y": 420,  "w": 300, "h": 140, "label": "300 BLOCK" },
-    { "x": 1340, "y": 650,  "w": 200, "h": 200, "label": "ADMIN OFFICES" },
-    { "x": 1550, "y": 420,  "w": 140, "h": 640, "label": "A WING" },
+    /* ---------- LONG B WING (mid-left, horizontal) ---------- */
+    { "x": 360,  "y": 660, "w": 1100, "h": 200, "label": "B WING" },
 
-    /* --- TOP-CENTER / TOP-RIGHT --- */
-    { "x": 1670, "y": 180,  "w": 340, "h": 140, "label": "LOCKER ROOMS" },
-    { "x": 1880, "y": 480,  "w": 260, "h": 200, "label": "WT / 402–407" },
-    { "x": 2130, "y": 220,  "w": 320, "h": 300, "label": "CONSTRUCTION\nACADEMY" },
-    { "x": 2350, "y": 520,  "w": 420, "h": 180, "label": "WEST WING\nW101–W115" },
+    /* ---------- CENTER BLOCKS beside A Wing ---------- */
+    { "x": 1120, "y": 420, "w": 300, "h": 140, "label": "300 BLOCK" },
+    { "x": 1200, "y": 700, "w": 260, "h": 200, "label": "ADMIN OFFICES" },
 
-    /* --- RIGHT-CENTER --- */
-    { "x": 1750, "y": 900,  "w": 320, "h": 240, "label": "MEDIA CENTER 200" },
-    { "x": 2100, "y": 820,  "w": 200, "h": 560, "label": "D WING" },
+    /* A Wing = the tall vertical spine in the middle */
+    { "x": 1480, "y": 420, "w": 120, "h": 680, "label": "A WING" },
 
-    /* --- BOTTOM-CENTER --- */
-    { "x": 1450, "y": 1100, "w": 220, "h": 160, "label": "GUIDANCE 700" },
-    { "x": 1430, "y": 1280, "w": 280, "h": 160, "label": "600 BUILDING" },
+    /* Narrow main corridor that runs to Guidance/600 on the right of A Wing */
+    { "x": 1605, "y": 420, "w": 70,  "h": 760, "label": "MAIN HALL" },
 
-    /* --- BOTTOM-LEFT --- */
-    { "x": 600,  "y": 1080, "w": 800, "h": 320, "label": "C WING" },
+    /* ---------- TOP-CENTER / RIGHT CLUSTER ---------- */
+    { "x": 1400, "y": 240, "w": 160, "h":  80, "label": "353 G" },
+    { "x": 1650, "y": 140, "w": 300, "h": 130, "label": "LOCKER ROOMS" },
+    { "x": 1980, "y": 210, "w": 300, "h": 280, "label": "CONSTRUCTION\nACADEMY" },
+    { "x": 1780, "y": 520, "w": 260, "h": 200, "label": "WT / 402–407" },
 
-    /* --- BOTTOM-RIGHT --- */
-    { "x": 2300, "y": 1180, "w": 520, "h": 220, "label": "EAST WING\nE100–E113" }
+    /* West Wing: long ribbon at mid-right */
+    { "x": 2180, "y": 520, "w": 420, "h": 160, "label": "WEST WING\nW101–W115" },
+
+    /* ---------- RIGHT-CENTER ---------- */
+    { "x": 1700, "y": 880, "w": 320, "h": 240, "label": "MEDIA CENTER 200" },
+    { "x": 2060, "y": 820, "w": 180, "h": 560, "label": "D WING" },
+
+    /* ---------- BOTTOM-CENTER ---------- */
+    { "x": 1380, "y": 1100, "w": 200, "h": 150, "label": "GUIDANCE 700" },
+    { "x": 1360, "y": 1270, "w": 260, "h": 160, "label": "600 BUILDING" },
+
+    /* ---------- BOTTOM-LEFT (C Wing is L-shaped) ---------- */
+    { "x": 420,  "y": 1040, "w": 220, "h": 380, "label": "C WING (WEST)" },
+    { "x": 520,  "y": 1240, "w": 780, "h": 200, "label": "C WING (SOUTH)" },
+
+    /* ---------- BOTTOM-RIGHT ---------- */
+    { "x": 2200, "y": 1180, "w": 380, "h": 220, "label": "EAST WING\nE100–E113" }
   ]
 }
