@@ -26,25 +26,25 @@
   const CHAT_DURATION_MS = 5000;
   let localEcho = null;
 
-  // Camera (set during render)
+  // Camera
   let camX = 0, camY = 0;
+  let roomCamX = 0, roomCamY = 0;
 
-  // Mouse hover
-  let mouseX = 0, mouseY = 0;        // screen coords
-  let hoverRect = null;              // obstacle/room we're hovering
+  // Mouse hover (screen coords -> world coords)
+  let mouseX = 0, mouseY = 0;
   canvas.addEventListener('mousemove', (e) => {
     const r = canvas.getBoundingClientRect();
-    const sx = (e.clientX - r.left) * (canvas.width / r.width);
-    const sy = (e.clientY - r.top)  * (canvas.height / r.height);
-    mouseX = sx; mouseY = sy;
+    mouseX = (e.clientX - r.left) * (canvas.width / r.width);
+    mouseY = (e.clientY - r.top)  * (canvas.height / r.height);
   });
 
-  // Interior state (separate scene)
-  let currentRoom = null; // { id, name, interior{bg,objects[]}, enter{...} }
+  // Interior state
+  let currentRoomId = null;
 
-  // Load campus layout
-  fetch('campus.json').then(r => r.json()).then(json => { world = json; });
+  // Load layout fallback (server sends rooms in init anyway)
+  fetch('campus.json').then(r => r.json()).then(json => { world = { ...world, ...json }; });
 
+  // Input state
   const input = { up:false, down:false, left:false, right:false };
   const keys = new Map([
     ['ArrowUp','up'], ['KeyW','up'], ['ArrowDown','down'], ['KeyS','down'],
@@ -56,18 +56,18 @@
   socket.on('disconnect', ()=> setStatus(false,'Disconnected'));
   socket.on('connect_error', ()=> setStatus(false,'Connect error'));
 
-  function sendInput(){ if (currentRoom) return; socket.emit('input', input); }
+  function sendInput(){ socket.emit('input', input); }
 
   document.addEventListener('keydown', (e) => {
-    // ENTER behavior: if hovering a building and not inside a room, TP into it.
-    if (e.code === 'Enter' && !currentRoom && document.activeElement !== chatInput) {
-      if (hoverRect) { e.preventDefault(); enterRoomFromRect(hoverRect); return; }
-      // no hover -> open chat
+    // ENTER -> if hovering a building on campus, enter that room; otherwise focus chat
+    if (e.code === 'Enter' && document.activeElement !== chatInput) {
+      if (!currentRoomId) {
+        const rect = rectUnderMouse();
+        if (rect) { const room = roomForRect(rect); if (room) { e.preventDefault(); socket.emit('enterRoom', { roomId: room.id }); } return; }
+      }
       chatInput.focus(); return;
     }
-    // Chat submit handled by form; ignore here.
-
-    if (e.code === 'Escape' || e.code === 'KeyQ') { leaveRoom(); return; }
+    if (e.code === 'Escape' || e.code === 'KeyQ') { socket.emit('leaveRoom'); return; }
 
     const dir = keys.get(e.code); if (!dir) return;
     if (!input[dir]) { input[dir] = true; sendInput(); }
@@ -77,11 +77,11 @@
     if (input[dir]) { input[dir] = false; sendInput(); }
   });
 
-  // D-pad (disabled while inside a room)
+  // D-pad (always active; movement works in campus and rooms)
   dpad.querySelectorAll('button').forEach(btn => {
     const dir = btn.dataset.dir;
-    const on  = (ev) => { ev.preventDefault(); if (currentRoom) return; if (!input[dir]) { input[dir] = true; sendInput(); } };
-    const off = (ev) => { ev.preventDefault(); if (currentRoom) return; if (input[dir]) { input[dir] = false; sendInput(); } };
+    const on  = (ev) => { ev.preventDefault(); if (!input[dir]) { input[dir] = true; sendInput(); } };
+    const off = (ev) => { ev.preventDefault(); if (input[dir]) { input[dir] = false; sendInput(); } };
     btn.addEventListener('touchstart', on, { passive:false });
     btn.addEventListener('touchend',   off, { passive:false });
     btn.addEventListener('touchcancel',off, { passive:false });
@@ -90,14 +90,19 @@
     btn.addEventListener('mouseleave',off);
   });
 
-  // Join
+  // Join / init
   nameForm.addEventListener('submit', (e) => { e.preventDefault(); socket.emit('join', nameInput.value || ''); });
   nameInput.value = localStorage.getItem('campusName') || '';
   socket.on('init', (payload) => {
-    me = payload.id; radius = payload.radius || 18;
+    me = payload.id;
+    radius = payload.radius || 18;
+    // authoritative world+rooms from server
+    world = { ...world, ...payload.world };
     const val = nameInput.value.trim(); if (val) localStorage.setItem('campusName', val);
     nameModal.style.display = 'none';
   });
+
+  socket.on('roomChanged', ({ roomId }) => { currentRoomId = roomId || null; });
 
   // Chat
   chatForm.addEventListener('submit', (e) => {
@@ -112,95 +117,120 @@
   // ---------- Helpers ----------
   function lerp(a,b,t){ return a + (b-a)*t; }
   function clamp(v,lo,hi){ return Math.max(lo, Math.min(hi, v)); }
-  function lerpPlayer(pa,pb,t){ if(!pa) return pb; if(!pb) return pa;
-    return { id: pb.id, name: pb.name, color: pb.color,
-      x: lerp(pa.x,pb.x,t), y: lerp(pa.y,pb.y,t),
-      chatText: pb.chatText, chatTs: pb.chatTs }; }
+  function lerpPlayer(pa,pb,t){
+    if (!pa) return pb; if (!pb) return pa;
+    // room switch? snap to new space
+    if (pa.roomId !== pb.roomId) return pb;
+    return {
+      id: pb.id, name: pb.name, color: pb.color,
+      x: lerp(pa.x, pb.x, t), y: lerp(pa.y, pb.y, t),
+      rx: lerp(pa.rx ?? pb.rx, pb.rx, t), ry: lerp(pa.ry ?? pb.ry, pb.ry, t),
+      roomId: pb.roomId,
+      chatText: pb.chatText, chatTs: pb.chatTs
+    };
+  }
 
-  function drawGrid(){
+  function drawGridCampus(){
     const grid = 120;
-    ctx.lineWidth = 1;
     const startX = -((camX % grid) + grid) % grid;
     const startY = -((camY % grid) + grid) % grid;
-    ctx.strokeStyle = '#0f1725';
+    ctx.strokeStyle = '#0f1725'; ctx.lineWidth = 1;
     for (let x = startX; x < canvas.width; x += grid) { ctx.beginPath(); ctx.moveTo(x,0); ctx.lineTo(x,canvas.height); ctx.stroke(); }
     for (let y = startY; y < canvas.height; y += grid) { ctx.beginPath(); ctx.moveTo(0,y); ctx.lineTo(canvas.width,y); ctx.stroke(); }
   }
-
-  function drawBuildings(){
-    hoverRect = null;
-    const mxWorld = mouseX + camX;
-    const myWorld = mouseY + camY;
+  function drawBuildingsAndHover(){
+    const mxW = mouseX + camX, myW = mouseY + camY;
+    let hover = null;
     ctx.lineWidth = 2;
-
     for (const o of (world.obstacles || [])) {
-      const sx = Math.round(o.x - camX);
-      const sy = Math.round(o.y - camY);
-      ctx.fillStyle = '#1d2536';
-      ctx.fillRect(sx, sy, o.w, o.h);
-      ctx.strokeStyle = '#2f3c5a';
-      ctx.strokeRect(sx, sy, o.w, o.h);
-
-      // hover detection (in world coords)
-      if (mxWorld >= o.x && mxWorld <= o.x + o.w && myWorld >= o.y && myWorld <= o.y + o.h) {
-        hoverRect = o;
-      }
-
-      // label
-      ctx.fillStyle = '#aab6e5';
-      ctx.font = '600 14px Inter, sans-serif';
-      ctx.textAlign = 'center';
-      for (const [i,line] of String(o.label||'').split('\n').entries()) {
-        ctx.fillText(line, sx + o.w/2, sy + 18 + i*18);
-      }
+      const sx = Math.round(o.x - camX), sy = Math.round(o.y - camY);
+      ctx.fillStyle = '#1d2536'; ctx.fillRect(sx, sy, o.w, o.h);
+      ctx.strokeStyle = '#2f3c5a'; ctx.strokeRect(sx, sy, o.w, o.h);
+      if (mxW >= o.x && mxW <= o.x + o.w && myW >= o.y && myW <= o.y + o.h) hover = o;
+      ctx.fillStyle = '#aab6e5'; ctx.font = '600 14px Inter, sans-serif'; ctx.textAlign = 'center';
+      for (const [i,line] of String(o.label||'').split('\n').entries()) ctx.fillText(line, sx + o.w/2, sy + 18 + i*18);
     }
-
-    // hover highlight
-    if (hoverRect) {
-      const sx = Math.round(hoverRect.x - camX);
-      const sy = Math.round(hoverRect.y - camY);
-      ctx.lineWidth = 3;
-      ctx.strokeStyle = '#67a8ff';
-      ctx.strokeRect(sx - 2, sy - 2, hoverRect.w + 4, hoverRect.h + 4);
-
-      // hint pill near top
-      ctx.fillStyle = 'rgba(0,0,0,0.55)';
-      ctx.fillRect(canvas.width/2 - 220, 16, 440, 36);
-      ctx.strokeStyle = 'rgba(255,255,255,0.12)';
-      ctx.strokeRect(canvas.width/2 - 220, 16, 440, 36);
+    if (hover) {
+      const sx = Math.round(hover.x - camX), sy = Math.round(hover.y - camY);
+      ctx.lineWidth = 3; ctx.strokeStyle = '#67a8ff'; ctx.strokeRect(sx-2, sy-2, hover.w+4, hover.h+4);
+      // hint
+      ctx.fillStyle = 'rgba(0,0,0,0.55)'; ctx.fillRect(canvas.width/2 - 220, 16, 440, 36);
+      ctx.strokeStyle = 'rgba(255,255,255,0.12)'; ctx.strokeRect(canvas.width/2 - 220, 16, 440, 36);
       ctx.fillStyle = '#e8ecff'; ctx.font = '600 14px Inter, sans-serif'; ctx.textAlign = 'center';
-      const name = hoverRect.label || 'Room';
-      ctx.fillText(`Press Enter to enter ${name}`, canvas.width/2, 38);
+      ctx.fillText(`Press Enter to enter ${hover.label || 'Room'}`, canvas.width/2, 38);
     }
+    return hover;
+  }
+  function drawPlayerCampus(p){
+    const x = Math.round(p.x - camX), y = Math.round(p.y - camY);
+    drawAvatarAndName(x, y, p.name, p.color, p.id === me);
+    drawChatAt(x, y, p);
   }
 
-  function drawPlayer(p, isMe){
-    const x = Math.round(p.x - camX);
-    const y = Math.round(p.y - camY);
+  function getRoomById(id){ return (world.rooms || []).find(r => r.id === id) || null; }
+  function roomForRect(rect){
+    // match enter rectangle to a room
+    return (world.rooms || []).find(r => r.enter && r.enter.x===rect.x && r.enter.y===rect.y && r.enter.w===rect.w && r.enter.h===rect.h) || null;
+  }
+  function drawGridRoom(rm){
+    const grid = 100;
+    const startX = -((roomCamX % grid) + grid) % grid;
+    const startY = -((roomCamY % grid) + grid) % grid;
+    ctx.strokeStyle = 'rgba(255,255,255,0.05)'; ctx.lineWidth = 1;
+    for (let x = startX; x < canvas.width; x += grid) { ctx.beginPath(); ctx.moveTo(x,0); ctx.lineTo(x,canvas.height); ctx.stroke(); }
+    for (let y = startY; y < canvas.height; y += grid) { ctx.beginPath(); ctx.moveTo(0,y); ctx.lineTo(canvas.width,y); ctx.stroke(); }
+  }
+  function drawRoomScene(rm){
+    const iw = rm.interior?.w || 1100, ih = rm.interior?.h || 700;
+    // room bg
+    ctx.fillStyle = rm.interior?.bg || '#1c2538';
+    ctx.fillRect(0,0,canvas.width,canvas.height);
+    drawGridRoom(rm);
+    // interior objects
+    const objs = rm.interior?.objects || [];
+    for (const o of objs) {
+      const x = Math.round((o.x || 0) - roomCamX), y = Math.round((o.y || 0) - roomCamY);
+      ctx.fillStyle = o.fill || 'rgba(255,255,255,0.1)'; ctx.fillRect(x, y, o.w || 100, o.h || 60);
+      ctx.strokeStyle = o.stroke || 'rgba(0,0,0,0.25)'; ctx.lineWidth = 2; ctx.strokeRect(x, y, o.w || 100, o.h || 60);
+      if (o.label) { ctx.fillStyle='#dbe3ff'; ctx.font='600 14px Inter, sans-serif'; ctx.textAlign='center';
+        ctx.fillText(o.label, x + (o.w||100)/2, y + (o.h||60)/2 + 5); }
+    }
+    // title
+    ctx.fillStyle = 'rgba(0,0,0,0.35)'; ctx.fillRect(0, 0, canvas.width, 48);
+    ctx.fillStyle = '#e8ecff'; ctx.font = '700 18px Inter, sans-serif'; ctx.textAlign='left';
+    ctx.fillText(`Inside: ${rm.name}`, 16, 30);
+    ctx.fillStyle = '#c8d0ff'; ctx.font = '600 14px Inter, sans-serif'; ctx.textAlign='right';
+    ctx.fillText('Esc/Q to exit', canvas.width - 16, 30);
+  }
+  function drawPlayerRoom(p){
+    const x = Math.round((p.rx || 0) - roomCamX), y = Math.round((p.ry || 0) - roomCamY);
+    drawAvatarAndName(x, y, p.name, p.color, p.id === me);
+    drawChatAt(x, y, p);
+  }
+
+  function drawAvatarAndName(x, y, name, color, isMe){
     ctx.beginPath(); ctx.arc(x+2, y+2, radius+1, 0, Math.PI*2); ctx.fillStyle='rgba(0,0,0,0.25)'; ctx.fill();
     ctx.beginPath(); ctx.arc(x, y, radius, 0, Math.PI*2);
-    ctx.fillStyle = isMe ? '#ffffff' : p.color || '#7dafff'; ctx.fill();
+    ctx.fillStyle = isMe ? '#ffffff' : (color || '#7dafff'); ctx.fill();
     ctx.lineWidth = isMe ? 3 : 2; ctx.strokeStyle = isMe ? '#3b82f6' : '#111827'; ctx.stroke();
     ctx.font='600 14px Inter, sans-serif'; ctx.textAlign='center'; ctx.lineWidth = 4; ctx.strokeStyle='rgba(0,0,0,0.6)';
-    ctx.strokeText(p.name, x, y - radius - 10); ctx.fillStyle='#e8ecff'; ctx.fillText(p.name, x, y - radius - 10);
-
+    ctx.strokeText(name, x, y - radius - 10); ctx.fillStyle='#e8ecff'; ctx.fillText(name, x, y - radius - 10);
+  }
+  function drawChatAt(x,y,p){
     const now=Date.now();
     let text=p.chatText, ts=p.chatTs;
-    if (isMe && localEcho) { if (!ts || localEcho.ts >= ts) { text=localEcho.text; ts=localEcho.ts; } if (now-localEcho.ts>2000) localEcho=null; }
+    if (p.id === me && localEcho) { if (!ts || localEcho.ts >= ts) { text=localEcho.text; ts=localEcho.ts; } if (now-localEcho.ts>2000) localEcho=null; }
     if (text && ts && now-ts<CHAT_DURATION_MS) {
       const t=(now-ts)/CHAT_DURATION_MS, alpha = t<0.8 ? 1 : (1-(t-0.8)/0.2);
       drawChatBubble(x,y,text,alpha);
     }
   }
-
   function wrapLines(text, maxWidth){
     const words = text.split(/\s+/), lines=[]; let line='';
     ctx.font='600 14px Inter, sans-serif';
-    for (const w of words) {
-      const test = line ? line+' '+w : w;
+    for (const w of words) { const test = line ? line+' '+w : w;
       if (ctx.measureText(test).width <= maxWidth) { line=test; }
-      else { if (line) lines.push(line); line = w; }
-    }
+      else { if (line) lines.push(line); line = w; } }
     if (line) lines.push(line);
     return lines.slice(0,4);
   }
@@ -225,99 +255,51 @@
     ctx.restore();
   }
 
-  // ---------- Rooms: make every building a room unless an explicit room exists ----------
-  function hashHue(str) { let h = 0; for (let i=0;i<str.length;i++) h = (h*31 + str.charCodeAt(i))|0; return Math.abs(h)%360; }
-  function implicitRoomFromObstacle(o, idx) {
-    const name = o.label || `Room ${idx+1}`;
-    const hue = hashHue(name);
-    return {
-      id: `auto_${idx}`,
-      name,
-      enter: { x: o.x, y: o.y, w: o.w, h: o.h },
-      interior: {
-        bg: `hsl(${hue} 35% 20%)`,
-        objects: [
-          { type: 'rect', x: 48, y: 60,  w: 320, h: 140, fill: `hsl(${(hue+20)%360} 35% 28%)`, label: 'Tables' },
-          { type: 'rect', x: 392, y: 60, w: 280, h: 160, fill: `hsl(${(hue+40)%360} 35% 28%)`, label: 'Desks' },
-          { type: 'rect', x: 692, y: 240, w: 240, h: 160, fill: `hsl(${(hue+60)%360} 35% 28%)`, label: 'Area' }
-        ]
-      }
-    };
-  }
-  function roomsMerged() {
-    const explicit = Array.isArray(world.rooms) ? world.rooms : [];
-    if (explicit.length) return explicit;
-    return (world.obstacles || []).map(implicitRoomFromObstacle);
-  }
-  function findRoomForRect(rect) {
-    // Prefer explicit rooms if they match the same rectangle area; else build an implicit one.
-    const exp = (world.rooms || []).find(r => r.enter &&
-      r.enter.x === rect.x && r.enter.y === rect.y && r.enter.w === rect.w && r.enter.h === rect.h);
-    if (exp) return exp;
-    const idx = (world.obstacles || []).indexOf(rect);
-    return implicitRoomFromObstacle(rect, idx >= 0 ? idx : 0);
-  }
-  function enterRoomFromRect(rect) { currentRoom = findRoomForRect(rect); }
-  function leaveRoom(){ currentRoom = null; }
-
-  function drawInteriorScene(){
-    if (!currentRoom) return;
-    // full scene (not just overlay)
-    ctx.fillStyle = currentRoom.interior?.bg || '#1c2538';
-    ctx.fillRect(0,0,canvas.width,canvas.height);
-
-    // Title bar
-    ctx.fillStyle = 'rgba(255,255,255,0.08)'; ctx.fillRect(0, 0, canvas.width, 50);
-    ctx.fillStyle = '#e8ecff'; ctx.font='700 18px Inter, sans-serif'; ctx.textAlign='left';
-    ctx.fillText(`Inside: ${currentRoom.name}`, 16, 32);
-
-    // Objects centered with safe padding
-    const pad = 24;
-    const innerW = Math.min(canvas.width - pad*2, 1100);
-    const innerH = Math.min(canvas.height - 80 - pad*2, 720);
-    const bx = Math.floor((canvas.width  - innerW)/2);
-    const by = 60;
-
-    ctx.fillStyle = 'rgba(0,0,0,0.12)'; roundRect(bx, by, innerW, innerH, 16); ctx.fill();
-
-    const objs = currentRoom.interior?.objects || [];
-    for (const o of objs) {
-      const rx = bx + o.x, ry = by + o.y, rw = o.w, rh = o.h;
-      ctx.fillStyle = o.fill || 'rgba(255,255,255,0.1)'; ctx.fillRect(rx, ry, rw, rh);
-      ctx.strokeStyle = o.stroke || 'rgba(0,0,0,0.3)'; ctx.lineWidth = 2; ctx.strokeRect(rx, ry, rw, rh);
-      if (o.label) { ctx.fillStyle = '#dbe3ff'; ctx.font = '600 14px Inter, sans-serif'; ctx.textAlign='center';
-        ctx.fillText(o.label, rx + rw/2, ry + rh/2 + 5); }
+  function rectUnderMouse(){
+    const mxW = mouseX + camX, myW = mouseY + camY;
+    for (const o of (world.obstacles || [])) {
+      if (mxW >= o.x && mxW <= o.x + o.w && myW >= o.y && myW <= o.y + o.h) return o;
     }
-
-    // Exit hint
-    ctx.fillStyle='#c8d0ff'; ctx.font='600 14px Inter, sans-serif'; ctx.textAlign='right';
-    ctx.fillText('Press Esc or Q to leave this room', canvas.width - 16, canvas.height - 16);
+    return null;
   }
 
   // ---------- Render loop ----------
   function render(dt){
-    // clear world
     ctx.fillStyle = '#0b0f14'; ctx.fillRect(0,0,canvas.width,canvas.height);
-
     interpTime += dt; const t = Math.max(0, Math.min(1, interpTime / SERVER_TICK_MS));
 
-    const interPlayers = []; for (const pb of currentState.players) { const pa = lastState.players.find(x=>x.id===pb.id); interPlayers.push(lerpPlayer(pa,pb,t)); }
+    // Build interpolated players with room info
+    const interPlayers = [];
+    for (const pb of currentState.players) {
+      const pa = lastState.players.find(x=>x.id===pb.id);
+      interPlayers.push(lerpPlayer(pa, pb, t));
+    }
 
-    // Camera follows me
+    // me
     const meP = interPlayers.find(p=>p.id===me);
-    if (meP) {
-      camX = clamp(meP.x - canvas.width/2, 0, (world.width||3200) - canvas.width);
-      camY = clamp(meP.y - canvas.height/2, 0, (world.height||2000) - canvas.height);
-    } else { camX = 0; camY = 0; }
 
-    if (!currentRoom) {
-      // Campus scene
-      drawGrid();
-      drawBuildings();
-      for (const p of interPlayers) drawPlayer(p, p.id === me);
+    if (!currentRoomId) {
+      // Campus camera follows campus coords
+      if (meP) {
+        camX = clamp(meP.x - canvas.width/2, 0, (world.width||3200) - canvas.width);
+        camY = clamp(meP.y - canvas.height/2, 0, (world.height||2000) - canvas.height);
+      } else { camX = 0; camY = 0; }
+
+      drawGridCampus();
+      const hover = drawBuildingsAndHover();
+      for (const p of interPlayers) if (!p.roomId) drawPlayerCampus(p);
     } else {
-      // Interior scene
-      drawInteriorScene();
+      // Room scene
+      const rm = getRoomById(currentRoomId);
+      const iw = rm?.interior?.w || 1100, ih = rm?.interior?.h || 700;
+      // Camera follows room coords
+      if (meP) {
+        roomCamX = clamp((meP.rx||0) - canvas.width/2, 0, Math.max(0, iw - canvas.width));
+        roomCamY = clamp((meP.ry||0) - canvas.height/2, 0, Math.max(0, ih - canvas.height));
+      } else { roomCamX = roomCamY = 0; }
+
+      drawRoomScene(rm);
+      for (const p of interPlayers) if (p.roomId === currentRoomId) drawPlayerRoom(p);
     }
 
     requestAnimationFrame((now)=>{ const prev = render.lastTime || now; render.lastTime = now; render(now - prev); });
