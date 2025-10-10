@@ -27,35 +27,51 @@ function loadCampusJSON(file) {
 }
 const WORLD = loadCampusJSON(path.join(__dirname, 'public', 'campus.json'));
 
-// Build room list: use explicit rooms if present; otherwise every obstacle becomes a room.
 function hashHue(str) { let h=0; for (let i=0;i<str.length;i++) h=(h*31+str.charCodeAt(i))|0; return Math.abs(h)%360; }
+function normInterior(i, name) {
+  const hue = hashHue(name || 'room');
+  return {
+    w: (i && (i.w || i.width)) || 1100,
+    h: (i && (i.h || i.height)) || 700,
+    bg: (i && i.bg) || `hsl(${hue} 35% 20%)`,
+    objects: Array.isArray(i?.objects) ? i.objects : []
+  };
+}
+
+// Build room list (with optional subrooms).
 function buildRooms(world) {
-  if (Array.isArray(world.rooms) && world.rooms.length) {
-    return world.rooms.map((r, i) => ({
+  const explicit = Array.isArray(world.rooms) ? world.rooms : [];
+  if (explicit.length) {
+    return explicit.map((r, i) => ({
       id: r.id || `room_${i}`,
       name: r.name || r.id || `Room ${i+1}`,
-      enter: r.enter,
-      interior: {
-        w: (r.interior && (r.interior.w || r.interior.width)) || 1100,
-        h: (r.interior && (r.interior.h || r.interior.height)) || 700,
-        bg: r.interior?.bg || `hsl(${hashHue(r.name||r.id||'room') } 35% 20%)`,
-        objects: Array.isArray(r.interior?.objects) ? r.interior.objects : []
-      }
+      enter: r.enter, // {x,y,w,h}
+      interior: normInterior(r.interior, r.name || r.id),
+      subrooms: Array.isArray(r.subrooms) ? r.subrooms.map((s, j) => ({
+        id: s.id || `sub_${j}`,
+        name: s.name || s.id || `Subroom ${j+1}`,
+        interior: normInterior(s.interior, (r.name || r.id || 'room') + '_' + (s.name || s.id || 'sub'))
+      })) : []
     }));
   }
-  // implicit rooms from obstacles
+
+  // Implicit: every obstacle becomes a room, no subrooms by default.
   const obs = Array.isArray(world.obstacles) ? world.obstacles : [];
-  return obs.map((o, i) => {
-    const name = o.label || `Room ${i+1}`;
-    return {
-      id: `auto_${i}`,
-      name,
-      enter: { x: o.x, y: o.y, w: o.w, h: o.h },
-      interior: { w: 1100, h: 700, bg: `hsl(${hashHue(name)} 35% 20%)`, objects: [] }
-    };
-  });
+  return obs.map((o, i) => ({
+    id: `auto_${i}`,
+    name: o.label || `Room ${i+1}`,
+    enter: { x: o.x, y: o.y, w: o.w, h: o.h },
+    interior: normInterior(null, o.label || `Room ${i+1}`),
+    subrooms: []
+  }));
 }
 const ROOMS = buildRooms(WORLD);
+
+function findRoomById(id) { return ROOMS.find(r => r.id === id) || null; }
+function findSubroom(roomId, subId) {
+  const r = findRoomById(roomId); if (!r) return null;
+  return (r.subrooms || []).find(s => s.id === subId) || null;
+}
 
 const TICK_RATE = 20;
 const DT = 1 / TICK_RATE;
@@ -84,8 +100,6 @@ function sanitizeChat(raw) {
 function randomColor() { const h = Math.floor(Math.random() * 360); return `hsl(${h} 70% 60%)`; }
 function clamp(v, lo, hi) { return Math.max(lo, Math.min(hi, v)); }
 
-function findRoomById(id) { return ROOMS.find(r => r.id === id) || null; }
-
 io.on('connection', (socket) => {
   socket.on('join', (rawName) => {
     let name = sanitizeName(rawName) || 'Student';
@@ -95,11 +109,14 @@ io.on('connection', (socket) => {
     const p = {
       id: socket.id,
       name,
+      color: randomColor(),
+      // campus coords
       x: WORLD.spawn?.x ?? 1600,
       y: WORLD.spawn?.y ?? 1000,
-      color: randomColor(),
       // room state (null = on campus)
       roomId: null,
+      subroomId: null,
+      // in-room coords
       rx: 0, ry: 0,
       chat: null,
       _lastChatAt: 0
@@ -107,6 +124,7 @@ io.on('connection', (socket) => {
     players.set(socket.id, p);
     inputs.set(socket.id, { up: false, down: false, left: false, right: false });
 
+    // send authoritative rooms (with subrooms)
     socket.emit('init', { id: socket.id, world: { ...WORLD, rooms: ROOMS }, radius: PLAYER_RADIUS });
   });
 
@@ -117,8 +135,7 @@ io.on('connection', (socket) => {
   });
 
   socket.on('chat', (raw) => {
-    const p = players.get(socket.id);
-    if (!p) return;
+    const p = players.get(socket.id); if (!p) return;
     const now = Date.now();
     if (now - p._lastChatAt < CHAT_COOLDOWN_MS) return;
     const text = sanitizeChat(raw);
@@ -131,27 +148,37 @@ io.on('connection', (socket) => {
     const p = players.get(socket.id); if (!p) return;
     const rm = findRoomById(roomId); if (!rm) return;
     p.roomId = rm.id;
-    // spawn in center of interior
+    p.subroomId = null; // lobby by default
     p.rx = Math.floor(rm.interior.w / 2);
     p.ry = Math.floor(rm.interior.h / 2);
-    socket.emit('roomChanged', { roomId: p.roomId });
+    socket.emit('roomChanged', { roomId: p.roomId, subroomId: null });
+  });
+
+  socket.on('enterSubroom', ({ roomId, subroomId }) => {
+    const p = players.get(socket.id); if (!p) return;
+    const rm = findRoomById(roomId); if (!rm) return;
+    const sr = findSubroom(rm.id, subroomId); if (!sr) return;
+    p.roomId = rm.id;
+    p.subroomId = sr.id;
+    p.rx = Math.floor(sr.interior.w / 2);
+    p.ry = Math.floor(sr.interior.h / 2);
+    socket.emit('roomChanged', { roomId: p.roomId, subroomId: p.subroomId });
   });
 
   socket.on('leaveRoom', () => {
     const p = players.get(socket.id); if (!p) return;
     p.roomId = null;
-    socket.emit('roomChanged', { roomId: null });
+    p.subroomId = null;
+    socket.emit('roomChanged', { roomId: null, subroomId: null });
   });
 
   socket.on('disconnect', () => { players.delete(socket.id); inputs.delete(socket.id); });
 });
 
-// Authoritative tick: move either on campus (x,y) or inside room (rx,ry)
+// Authoritative tick: campus (x,y) vs room/subroom (rx,ry)
 setInterval(() => {
   for (const [id, p] of players) {
-    const inp = inputs.get(id);
-    if (!inp) continue;
-
+    const inp = inputs.get(id); if (!inp) continue;
     let dx = 0, dy = 0;
     if (inp.left)  dx -= 1;
     if (inp.right) dx += 1;
@@ -159,13 +186,13 @@ setInterval(() => {
     if (inp.down)  dy += 1;
 
     if (dx || dy) {
-      const len = Math.hypot(dx, dy) || 1;
-      dx /= len; dy /= len;
+      const len = Math.hypot(dx, dy) || 1; dx /= len; dy /= len;
 
       if (p.roomId) {
         const rm = findRoomById(p.roomId);
-        const W = rm?.interior.w ?? 1100;
-        const H = rm?.interior.h ?? 700;
+        const sr = p.subroomId ? findSubroom(p.roomId, p.subroomId) : null;
+        const W = (sr?.interior?.w) || (rm?.interior?.w) || 1100;
+        const H = (sr?.interior?.h) || (rm?.interior?.h) || 700;
         p.rx = clamp(p.rx + dx * SPEED * DT, PLAYER_RADIUS, W - PLAYER_RADIUS);
         p.ry = clamp(p.ry + dy * SPEED * DT, PLAYER_RADIUS, H - PLAYER_RADIUS);
       } else {
@@ -183,8 +210,9 @@ setInterval(() => {
     color: p.color,
     // campus coords
     x: Math.round(p.x), y: Math.round(p.y),
-    // room coords
+    // room/subroom
     roomId: p.roomId,
+    subroomId: p.subroomId,
     rx: Math.round(p.rx), ry: Math.round(p.ry),
     // chat
     chatText: p.chat?.text || null,
