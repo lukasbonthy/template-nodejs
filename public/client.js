@@ -26,21 +26,8 @@
   const CHAT_DURATION_MS = 5000;
   let localEcho = null;
 
-  // Camera (set during render)
-  let camX = 0, camY = 0;
-
-  // Mouse hover
-  let mouseX = 0, mouseY = 0;        // screen coords
-  let hoverRect = null;              // obstacle/room we're hovering
-  canvas.addEventListener('mousemove', (e) => {
-    const r = canvas.getBoundingClientRect();
-    const sx = (e.clientX - r.left) * (canvas.width / r.width);
-    const sy = (e.clientY - r.top)  * (canvas.height / r.height);
-    mouseX = sx; mouseY = sy;
-  });
-
-  // Interior state (separate scene)
-  let currentRoom = null; // { id, name, interior{bg,objects[]}, enter{...} }
+  // Interior state
+  let currentRoom = null; // { id, name, interior{bg,objects[]}, ... } or null
 
   // Load campus layout
   fetch('campus.json').then(r => r.json()).then(json => { world = json; });
@@ -59,14 +46,8 @@
   function sendInput(){ if (currentRoom) return; socket.emit('input', input); }
 
   document.addEventListener('keydown', (e) => {
-    // ENTER behavior: if hovering a building and not inside a room, TP into it.
-    if (e.code === 'Enter' && !currentRoom && document.activeElement !== chatInput) {
-      if (hoverRect) { e.preventDefault(); enterRoomFromRect(hoverRect); return; }
-      // no hover -> open chat
-      chatInput.focus(); return;
-    }
-    // Chat submit handled by form; ignore here.
-
+    if (e.code === 'Enter' && document.activeElement !== chatInput) { e.preventDefault(); chatInput.focus(); return; }
+    if (e.code === 'KeyE') { tryEnterRoomUnderMe(); return; }
     if (e.code === 'Escape' || e.code === 'KeyQ') { leaveRoom(); return; }
 
     const dir = keys.get(e.code); if (!dir) return;
@@ -117,7 +98,7 @@
       x: lerp(pa.x,pb.x,t), y: lerp(pa.y,pb.y,t),
       chatText: pb.chatText, chatTs: pb.chatTs }; }
 
-  function drawGrid(){
+  function drawGrid(camX, camY){
     const grid = 120;
     ctx.lineWidth = 1;
     const startX = -((camX % grid) + grid) % grid;
@@ -127,12 +108,8 @@
     for (let y = startY; y < canvas.height; y += grid) { ctx.beginPath(); ctx.moveTo(0,y); ctx.lineTo(canvas.width,y); ctx.stroke(); }
   }
 
-  function drawBuildings(){
-    hoverRect = null;
-    const mxWorld = mouseX + camX;
-    const myWorld = mouseY + camY;
+  function drawBuildings(camX, camY){
     ctx.lineWidth = 2;
-
     for (const o of (world.obstacles || [])) {
       const sx = Math.round(o.x - camX);
       const sy = Math.round(o.y - camY);
@@ -140,12 +117,6 @@
       ctx.fillRect(sx, sy, o.w, o.h);
       ctx.strokeStyle = '#2f3c5a';
       ctx.strokeRect(sx, sy, o.w, o.h);
-
-      // hover detection (in world coords)
-      if (mxWorld >= o.x && mxWorld <= o.x + o.w && myWorld >= o.y && myWorld <= o.y + o.h) {
-        hoverRect = o;
-      }
-
       // label
       ctx.fillStyle = '#aab6e5';
       ctx.font = '600 14px Inter, sans-serif';
@@ -154,27 +125,9 @@
         ctx.fillText(line, sx + o.w/2, sy + 18 + i*18);
       }
     }
-
-    // hover highlight
-    if (hoverRect) {
-      const sx = Math.round(hoverRect.x - camX);
-      const sy = Math.round(hoverRect.y - camY);
-      ctx.lineWidth = 3;
-      ctx.strokeStyle = '#67a8ff';
-      ctx.strokeRect(sx - 2, sy - 2, hoverRect.w + 4, hoverRect.h + 4);
-
-      // hint pill near top
-      ctx.fillStyle = 'rgba(0,0,0,0.55)';
-      ctx.fillRect(canvas.width/2 - 220, 16, 440, 36);
-      ctx.strokeStyle = 'rgba(255,255,255,0.12)';
-      ctx.strokeRect(canvas.width/2 - 220, 16, 440, 36);
-      ctx.fillStyle = '#e8ecff'; ctx.font = '600 14px Inter, sans-serif'; ctx.textAlign = 'center';
-      const name = hoverRect.label || 'Room';
-      ctx.fillText(`Press Enter to enter ${name}`, canvas.width/2, 38);
-    }
   }
 
-  function drawPlayer(p, isMe){
+  function drawPlayer(p, camX, camY, isMe){
     const x = Math.round(p.x - camX);
     const y = Math.round(p.y - camY);
     ctx.beginPath(); ctx.arc(x+2, y+2, radius+1, 0, Math.PI*2); ctx.fillStyle='rgba(0,0,0,0.25)'; ctx.fill();
@@ -225,8 +178,11 @@
     ctx.restore();
   }
 
-  // ---------- Rooms: make every building a room unless an explicit room exists ----------
-  function hashHue(str) { let h = 0; for (let i=0;i<str.length;i++) h = (h*31 + str.charCodeAt(i))|0; return Math.abs(h)%360; }
+  // ---------- Rooms ----------
+  function hashHue(str) {
+    let h = 0; for (let i=0;i<str.length;i++) { h = (h*31 + str.charCodeAt(i))|0; }
+    return Math.abs(h) % 360;
+  }
   function implicitRoomFromObstacle(o, idx) {
     const name = o.label || `Room ${idx+1}`;
     const hue = hashHue(name);
@@ -237,9 +193,9 @@
       interior: {
         bg: `hsl(${hue} 35% 20%)`,
         objects: [
-          { type: 'rect', x: 48, y: 60,  w: 320, h: 140, fill: `hsl(${(hue+20)%360} 35% 28%)`, label: 'Tables' },
-          { type: 'rect', x: 392, y: 60, w: 280, h: 160, fill: `hsl(${(hue+40)%360} 35% 28%)`, label: 'Desks' },
-          { type: 'rect', x: 692, y: 240, w: 240, h: 160, fill: `hsl(${(hue+60)%360} 35% 28%)`, label: 'Area' }
+          { type: 'rect', x: 40,  y: 60,  w: 280, h: 120, fill: `hsl(${(hue+20)%360} 35% 28%)`, label: 'Tables' },
+          { type: 'rect', x: 360, y: 60,  w: 260, h: 160, fill: `hsl(${(hue+40)%360} 35% 28%)`, label: 'Desks' },
+          { type: 'rect', x: 640, y: 240, w: 220, h: 160, fill: `hsl(${(hue+60)%360} 35% 28%)`, label: 'Area' }
         ]
       }
     };
@@ -247,39 +203,42 @@
   function roomsMerged() {
     const explicit = Array.isArray(world.rooms) ? world.rooms : [];
     if (explicit.length) return explicit;
+    // No explicit rooms -> every building is enterable
     return (world.obstacles || []).map(implicitRoomFromObstacle);
   }
-  function findRoomForRect(rect) {
-    // Prefer explicit rooms if they match the same rectangle area; else build an implicit one.
-    const exp = (world.rooms || []).find(r => r.enter &&
-      r.enter.x === rect.x && r.enter.y === rect.y && r.enter.w === rect.w && r.enter.h === rect.h);
-    if (exp) return exp;
-    const idx = (world.obstacles || []).indexOf(rect);
-    return implicitRoomFromObstacle(rect, idx >= 0 ? idx : 0);
+  function roomAtPoint(px, py) {
+    for (const rm of roomsMerged()) {
+      const e = rm.enter;
+      if (px >= e.x && px <= e.x + e.w && py >= e.y && py <= e.y + e.h) return rm;
+    }
+    return null;
   }
-  function enterRoomFromRect(rect) { currentRoom = findRoomForRect(rect); }
+  function tryEnterRoomUnderMe(){
+    if (!me) return;
+    const meP = currentState.players.find(p=>p.id===me); if (!meP) return;
+    const rm = roomAtPoint(meP.x, meP.y);
+    if (rm) currentRoom = rm;
+  }
   function leaveRoom(){ currentRoom = null; }
 
-  function drawInteriorScene(){
+  function drawInteriorOverlay(){
     if (!currentRoom) return;
-    // full scene (not just overlay)
+    // dim world
+    ctx.fillStyle = 'rgba(0,0,0,0.55)'; ctx.fillRect(0,0,canvas.width,canvas.height);
+
+    const pad = 24, boxW = Math.min(canvas.width - pad*2, 980), boxH = Math.min(canvas.height - pad*2, 660);
+    const bx = Math.floor((canvas.width - boxW)/2), by = Math.floor((canvas.height - boxH)/2);
+
+    // room background
     ctx.fillStyle = currentRoom.interior?.bg || '#1c2538';
-    ctx.fillRect(0,0,canvas.width,canvas.height);
+    roundRect(bx, by, boxW, boxH, 16); ctx.fill();
 
-    // Title bar
-    ctx.fillStyle = 'rgba(255,255,255,0.08)'; ctx.fillRect(0, 0, canvas.width, 50);
-    ctx.fillStyle = '#e8ecff'; ctx.font='700 18px Inter, sans-serif'; ctx.textAlign='left';
-    ctx.fillText(`Inside: ${currentRoom.name}`, 16, 32);
+    // title bar
+    ctx.fillStyle = 'rgba(255,255,255,0.08)'; ctx.fillRect(bx, by, boxW, 44);
+    ctx.fillStyle = '#e8ecff'; ctx.font='700 16px Inter, sans-serif'; ctx.textAlign='left';
+    ctx.fillText(currentRoom.name, bx + 16, by + 28);
 
-    // Objects centered with safe padding
-    const pad = 24;
-    const innerW = Math.min(canvas.width - pad*2, 1100);
-    const innerH = Math.min(canvas.height - 80 - pad*2, 720);
-    const bx = Math.floor((canvas.width  - innerW)/2);
-    const by = 60;
-
-    ctx.fillStyle = 'rgba(0,0,0,0.12)'; roundRect(bx, by, innerW, innerH, 16); ctx.fill();
-
+    // objects
     const objs = currentRoom.interior?.objects || [];
     for (const o of objs) {
       const rx = bx + o.x, ry = by + o.y, rw = o.w, rh = o.h;
@@ -289,36 +248,43 @@
         ctx.fillText(o.label, rx + rw/2, ry + rh/2 + 5); }
     }
 
-    // Exit hint
-    ctx.fillStyle='#c8d0ff'; ctx.font='600 14px Inter, sans-serif'; ctx.textAlign='right';
-    ctx.fillText('Press Esc or Q to leave this room', canvas.width - 16, canvas.height - 16);
+    // leave hint
+    ctx.fillStyle='#c8d0ff'; ctx.font='600 13px Inter, sans-serif'; ctx.textAlign='right';
+    ctx.fillText('Press Esc or Q to leave', bx + boxW - 14, by + boxH - 14);
   }
 
   // ---------- Render loop ----------
   function render(dt){
-    // clear world
+    // clear
     ctx.fillStyle = '#0b0f14'; ctx.fillRect(0,0,canvas.width,canvas.height);
 
     interpTime += dt; const t = Math.max(0, Math.min(1, interpTime / SERVER_TICK_MS));
 
     const interPlayers = []; for (const pb of currentState.players) { const pa = lastState.players.find(x=>x.id===pb.id); interPlayers.push(lerpPlayer(pa,pb,t)); }
 
-    // Camera follows me
+    // camera follows me
     const meP = interPlayers.find(p=>p.id===me);
-    if (meP) {
-      camX = clamp(meP.x - canvas.width/2, 0, (world.width||3200) - canvas.width);
-      camY = clamp(meP.y - canvas.height/2, 0, (world.height||2000) - canvas.height);
-    } else { camX = 0; camY = 0; }
+    let camX=0, camY=0;
+    if (meP) { camX = clamp(meP.x - canvas.width/2, 0, (world.width||3200) - canvas.width); camY = clamp(meP.y - canvas.height/2, 0, (world.height||2000) - canvas.height); }
 
-    if (!currentRoom) {
-      // Campus scene
-      drawGrid();
-      drawBuildings();
-      for (const p of interPlayers) drawPlayer(p, p.id === me);
-    } else {
-      // Interior scene
-      drawInteriorScene();
+    drawGrid(camX, camY);
+    drawBuildings(camX, camY);
+
+    // “Press E” hint if standing on an enterable rectangle
+    if (meP && !currentRoom) {
+      const rm = roomAtPoint(meP.x, meP.y);
+      if (rm) {
+        ctx.fillStyle = 'rgba(0,0,0,0.55)'; ctx.fillRect(canvas.width/2 - 200, 18, 400, 34);
+        ctx.strokeStyle = 'rgba(255,255,255,0.12)'; ctx.strokeRect(canvas.width/2 - 200, 18, 400, 34);
+        ctx.fillStyle = '#e8ecff'; ctx.font = '600 14px Inter, sans-serif'; ctx.textAlign = 'center';
+        ctx.fillText(`Press E to enter ${rm.name}`, canvas.width/2, 40);
+      }
     }
+
+    for (const p of interPlayers) drawPlayer(p, camX, camY, p.id === me);
+
+    // interior overlay
+    drawInteriorOverlay();
 
     requestAnimationFrame((now)=>{ const prev = render.lastTime || now; render.lastTime = now; render(now - prev); });
   }
