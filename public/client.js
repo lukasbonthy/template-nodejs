@@ -194,6 +194,18 @@
     chatInput.blur();
   });
 
+  // ---------- Right-click actions (use equipped toy) ----------
+  canvas.addEventListener('contextmenu', (e) => {
+    e.preventDefault();
+    const me = currState.players.find(p => p.id === meId);
+    const kind = me?.equippedKind;
+    if (!kind) return; // need a toy equipped
+    const target = (!currentRoomId)
+      ? { x: mouseX + camX, y: mouseY + camY }
+      : { x: mouseX + roomCamX, y: mouseY + roomCamY };
+    socket.emit('action', { kind, target });
+  });
+
   // ---------- Server events ----------
   socket.on('init', (payload) => {
     meId = payload.id;
@@ -215,6 +227,11 @@
     currState = s;
     interpTime = 0;
   });
+
+  // Receive action FX from server
+  const ACTION_DUR = { bat:350, cake:900, pizza:900, mic:1100, book:800, flag:800, laptop:800, ball:900, paint:800 };
+  const effects = []; // {id,kind,space,roomId,subroomId,origin:{x,y},target:{x,y},ts}
+  socket.on('action', (e) => { effects.push(e); });
 
   // ---------- Helpers ----------
   function lerp(a,b,t){ return a + (b-a)*t; }
@@ -510,6 +527,121 @@
     return { iw, ih };
   }
 
+  // ---------- Action FX ----------
+  function drawEffects(whichSpace){
+    const now = Date.now();
+    for (let i = effects.length - 1; i >= 0; i--) {
+      const e = effects[i];
+      const dur = ACTION_DUR[e.kind] || 800;
+      const t = (now - e.ts) / dur;
+      if (t >= 1) { effects.splice(i, 1); continue; }
+
+      // Space filter
+      if (whichSpace === 'campus') {
+        if (e.space !== 'campus') continue;
+      } else {
+        if (e.space !== 'room') continue;
+        if (e.roomId !== currentRoomId) continue;
+        const myInSub = !!currentSubroomId, theirInSub = !!e.subroomId;
+        if (myInSub !== theirInSub) continue;
+        if (e.subroomId && e.subroomId !== currentSubroomId) continue;
+      }
+
+      // Screen coords
+      const p = currState.players.find(p => p.id === e.id);
+      let sx, sy, tx, ty, camx = 0, camy = 0;
+      if (whichSpace === 'campus') {
+        camx = camX; camy = camY;
+        sx = (p ? p.x : e.origin.x) - camx;
+        sy = (p ? p.y : e.origin.y) - camy;
+        tx = e.target.x - camx; ty = e.target.y - camy;
+      } else {
+        camx = roomCamX; camy = roomCamY;
+        sx = (p ? p.rx : e.origin.x) - camx;
+        sy = (p ? p.ry : e.origin.y) - camy;
+        tx = e.target.x - camx; ty = e.target.y - camy;
+      }
+
+      switch (e.kind) {
+        case 'bat': {
+          // swing arc toward target
+          const ang = Math.atan2(ty - sy, tx - sx);
+          const sweep = Math.PI * 0.9;
+          const start = ang - sweep * 0.6 + sweep * t;
+          const end   = start + Math.PI * 0.35;
+          ctx.save();
+          ctx.translate(sx, sy);
+          ctx.beginPath();
+          ctx.arc(0, 0, radius + 14, start, end);
+          ctx.lineWidth = 10;
+          ctx.strokeStyle = `rgba(255,255,255,${0.35*(1-t)})`;
+          ctx.stroke();
+          ctx.restore();
+          // smack sparkle
+          const ix = sx + Math.cos(ang) * (radius + 18);
+          const iy = sy + Math.sin(ang) * (radius + 18);
+          ctx.font='18px "Apple Color Emoji","Segoe UI Emoji",system-ui'; ctx.textAlign='center';
+          ctx.globalAlpha = 1 - t; ctx.fillText('💥', ix, iy); ctx.globalAlpha = 1;
+          break;
+        }
+        case 'ball': {
+          // move ⚽ towards target
+          const dx = tx - sx, dy = ty - sy; const dist = Math.hypot(dx, dy) || 1;
+          const speed = 800; // px/s
+          const travel = Math.min(dist, speed * (now - e.ts) / 1000);
+          const px = sx + dx/dist * travel, py = sy + dy/dist * travel;
+          ctx.font='22px "Apple Color Emoji","Segoe UI Emoji",system-ui'; ctx.textAlign='center';
+          ctx.fillText('⚽', px, py+8);
+          ctx.globalAlpha = 0.5*(1-t); ctx.fillText('💨', sx - 6, sy + 10); ctx.globalAlpha = 1;
+          break;
+        }
+        case 'cake': case 'pizza': {
+          const emoji = e.kind === 'cake' ? '🎂' : '🍕';
+          const lift = 24 * t;
+          ctx.font='22px "Apple Color Emoji","Segoe UI Emoji",system-ui'; ctx.textAlign='center';
+          ctx.globalAlpha = 1 - t; ctx.fillText(emoji, sx + 6, sy - radius - 12 - lift);
+          ctx.fillText('✨', sx - 10, sy - radius - 24 - lift*1.2);
+          ctx.globalAlpha = 1;
+          break;
+        }
+        case 'mic': {
+          const lift = 28 * t;
+          ctx.font='22px "Apple Color Emoji","Segoe UI Emoji",system-ui'; ctx.textAlign='center';
+          ctx.globalAlpha = 1 - t; ctx.fillText(t<0.5?'🎵':'🎶', sx + 10, sy - radius - 10 - lift); ctx.globalAlpha=1;
+          break;
+        }
+        case 'flag': {
+          const wob = Math.sin(t*Math.PI*2)*6;
+          ctx.save(); ctx.translate(sx, sy); ctx.rotate(wob*Math.PI/180);
+          ctx.font='22px "Apple Color Emoji","Segoe UI Emoji",system-ui'; ctx.textAlign='center';
+          ctx.fillText('🚩', radius+12, 8);
+          ctx.restore();
+          break;
+        }
+        case 'book': {
+          const lift = 20*t; ctx.font='20px "Apple Color Emoji","Segoe UI Emoji",system-ui'; ctx.textAlign='center';
+          ctx.globalAlpha=1-t; ctx.fillText('📖', sx + radius+10, sy + 6); ctx.fillText('✨', sx + radius+22, sy - 12 - lift);
+          ctx.globalAlpha=1; break;
+        }
+        case 'laptop': {
+          const scale = 1 + 0.25*Math.sin(t*Math.PI*2);
+          ctx.save(); ctx.translate(sx+radius+12, sy+6); ctx.scale(scale, scale);
+          ctx.font='20px "Apple Color Emoji","Segoe UI Emoji",system-ui'; ctx.textAlign='center'; ctx.fillText('💻', 0, 8);
+          ctx.restore();
+          break;
+        }
+        case 'paint': {
+          const r = 8 + 24*t, alpha = 1 - t;
+          ctx.beginPath(); ctx.arc(tx, ty, r, 0, Math.PI*2);
+          ctx.fillStyle = `rgba(103,168,255,${alpha*0.35})`; ctx.fill();
+          ctx.font='18px "Apple Color Emoji","Segoe UI Emoji",system-ui'; ctx.textAlign='center';
+          ctx.globalAlpha = alpha; ctx.fillText('🎨', tx, ty+6); ctx.globalAlpha=1;
+          break;
+        }
+      }
+    }
+  }
+
   // ---------- Hotbar (toys) ----------
   function drawHotbar(myEquippedKind) {
     const items = TOYS;
@@ -553,7 +685,7 @@
 
     // hint
     ctx.fillStyle = '#cbd5ff'; ctx.font = '600 12px Inter, sans-serif'; ctx.textAlign = 'center';
-    ctx.fillText('Click a toy to hold it • 0 clears • 1–9 equips (unless used for subrooms)', x + totalW/2, y - 6);
+    ctx.fillText('Right-click to use your toy • 0 clears • 1–9 equips (unless used for subrooms)', x + totalW/2, y - 6);
   }
 
   // ---------- Render loop ----------
@@ -592,6 +724,9 @@
         drawChatAt(x, y, p);
       }
 
+      // action FX for campus
+      drawEffects('campus');
+
       // Hotbar
       drawHotbar(me?.equippedKind || null);
 
@@ -616,6 +751,9 @@
         drawHeldItem(p.equippedKind, x, y);
         drawChatAt(x, y, p);
       }
+
+      // action FX for rooms
+      drawEffects('room');
 
       // Hotbar also inside rooms
       drawHotbar(me?.equippedKind || null);
