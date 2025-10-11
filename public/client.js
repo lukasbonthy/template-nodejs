@@ -143,7 +143,13 @@
       chatInput.focus();
       return;
     }
-
+    // Make chat capture clicks only while focused
+    chatInput.addEventListener('focus', () => {
+      chatForm.classList.add('open');
+    });
+    chatInput.addEventListener('blur', () => {
+      chatForm.classList.remove('open');
+    });
     // Space / E: USE toy
     if ((e.code === 'Space' || e.code === 'KeyE') && document.activeElement !== chatInput) {
       e.preventDefault();
