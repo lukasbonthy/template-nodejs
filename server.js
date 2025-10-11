@@ -1,6 +1,6 @@
 // server.js
-// Virtual Campus server: serves your exact campus.json (no overwrite),
-// keeps player names set via `join`, and syncs toys/FX + bat knockback.
+// Virtual Campus server: serves your campus.json, reliable name setting,
+// synced toys/FX, and bat knockback. Works with polling-only clients.
 
 const fs = require('fs');
 const path = require('path');
@@ -28,23 +28,15 @@ const BAT_HIT_COOLDOWN_MS    = 350;             // per-victim i-frames
 const TOYS = ['bat','cake','pizza','mic','book','flag','laptop','ball','paint'];
 
 // ------------------------------ Campus loading ------------------------------
-/**
- * Many folks add comments to campus.json. Parse "JSONC" safely by stripping
- * // line and /* block *\/ comments before JSON.parse.
- */
+/** Strip // and /* *\/ comments from JSON for leniency */
 function stripJsonComments(str) {
   if (typeof str !== 'string') return str;
-  // Remove /* */ blocks
   let s = str.replace(/\/\*[\s\S]*?\*\//g, '');
-  // Remove // line comments (not perfect inside strings, but works for typical maps)
   s = s.replace(/(^|[^:\\])\/\/.*$/gm, '$1');
   return s.trim();
 }
 
-/**
- * Load campus.json from ./public/campus.json or ./campus.json (prefer public).
- * If neither found or invalid, return null.
- */
+/** Load campus.json from ./public/campus.json or ./campus.json (prefer public) */
 function loadCampusFile() {
   const publicPath = path.join(__dirname, 'public', 'campus.json');
   const rootPath   = path.join(__dirname, 'campus.json');
@@ -56,7 +48,7 @@ function loadCampusFile() {
   if (!filePath) return null;
 
   try {
-    const raw = fs.readFileSync(filePath, 'utf8').replace(/^\uFEFF/, ''); // strip BOM
+    const raw = fs.readFileSync(filePath, 'utf8').replace(/^\uFEFF/, '');
     const parsed = JSON.parse(stripJsonComments(raw));
     return parsed;
   } catch (e) {
@@ -65,7 +57,7 @@ function loadCampusFile() {
   }
 }
 
-// Fallback world in case no campus.json is present/valid
+// Fallback world if no campus.json present/valid
 const DEFAULT_WORLD = {
   width: 3200,
   height: 2000,
@@ -91,21 +83,20 @@ const io = new Server(server, {
   path: '/socket.io'
 });
 
-// Static: support both /public and root side-by-side
+// Static: serve from ./public (if exists) and the project root
 const publicDir = path.join(__dirname, 'public');
 if (fs.existsSync(publicDir)) app.use(express.static(publicDir, { fallthrough: true }));
 app.use(express.static(__dirname, { fallthrough: true }));
 
-// Serve campus.json exactly as the client expects (so client map matches server)
+// Endpoint to provide the exact campus map the server is using
 app.get('/campus.json', (req, res) => res.json(world));
 
-// Root route → serve index.html (from public or root)
+// Root → serve index.html if present, else a minimal fallback page
 app.get('/', (req, res) => {
   const publicIndex = path.join(publicDir, 'index.html');
   const rootIndex   = path.join(__dirname, 'index.html');
   if (fs.existsSync(publicIndex)) return res.sendFile(publicIndex);
   if (fs.existsSync(rootIndex))   return res.sendFile(rootIndex);
-  // fallback HTML
   res
     .status(200)
     .type('html')
@@ -124,7 +115,7 @@ const players = new Map();
 
 function safeName(s = '') {
   s = String(s).slice(0, 16).trim();
-  // Allow letters/numbers/space/underscore/hyphen/period/apostrophe (and most unicode letters/numbers)
+  // Allow letters/numbers/space/underscore/hyphen/period/apostrophe (including unicode L/N)
   s = s.replace(/[^\p{L}\p{N} _\-'.]/gu, '').trim();
   return s || 'Penguin';
 }
@@ -133,7 +124,6 @@ function randomColor() {
   const h = hues[Math.floor(Math.random()*hues.length)];
   return `hsl(${h}deg 70% 70%)`;
 }
-
 function roomById(id) {
   return (world.rooms || []).find(r => r.id === id) || null;
 }
@@ -162,20 +152,28 @@ io.on('connection', (socket) => {
     lastHitTs: 0
   });
 
-  // Send authoritative world straight from campus.json (or default if missing)
+  // Send authoritative world (the same one served at /campus.json)
   socket.emit('init', {
     id: socket.id,
     radius: 18,
-    world,     // <- exact map used by the server; client should keep this (or its own campus.json identical)
+    world,
     toys: TOYS
   });
 
-  // Client sets their name here (fixes "everyone is Penguin" once they submit/join or auto-join on connect)
+  // Client sets their name here (and we confirm back)
   socket.on('join', (rawName) => {
     const p = players.get(socket.id);
     if (!p) return;
-    const nm = safeName(rawName);
-    p.name = nm; // persist for the socket lifetime
+    p.name = safeName(rawName);
+    io.to(socket.id).emit('profile', { id: p.id, name: p.name });
+  });
+
+  // (optional alias)
+  socket.on('setName', (rawName) => {
+    const p = players.get(socket.id);
+    if (!p) return;
+    p.name = safeName(rawName);
+    io.to(socket.id).emit('profile', { id: p.id, name: p.name });
   });
 
   // Input movement
