@@ -1,291 +1,454 @@
-// server.js — Virtual Campus (rooms + subrooms + toys + chat bubbles)
-// Run: node server.js
-// Needs: npm i express socket.io
+// server.js
+// Simple multiplayer “Virtual Campus” server with rooms, subrooms, toys,
+// synced action FX, and bat hit/knockback logic. Works with polling-only clients.
 
-const path = require('path');
 const fs = require('fs');
+const path = require('path');
 const express = require('express');
 const http = require('http');
 const { Server } = require('socket.io');
 
+// ------------------------------ Config ------------------------------
+const PORT = process.env.PORT || 3000;
+const TICK_MS = 50;                 // 20 FPS server tick
+const DT = TICK_MS / 1000;          // seconds per tick
+
+const CAMPUS_SPEED = 210;           // user-controlled movement (px/s)
+const ROOM_SPEED   = 220;
+
+const FRICTION = 0.90;              // decay for knockback velocity each tick
+
+// Bat combat tuning
+const BAT_ARC_RAD            = Math.PI * 0.75;  // 135° arc
+const BAT_RANGE_PX           = 70;              // swing reach
+const BAT_KNOCK_PXPS         = 520;             // knockback initial speed
+const BAT_HIT_COOLDOWN_MS    = 350;             // per-victim i-frames
+
+// Toys available (order matters: matches client)
+const TOYS = ['bat','cake','pizza','mic','book','flag','laptop','ball','paint'];
+
+// ------------------------------ World ------------------------------
+// Default in-memory world (used if campus.json is missing/invalid).
+let world = {
+  width: 3200,
+  height: 2000,
+  obstacles: [
+    // keep it sparse; you can swap this by providing a campus.json file
+    { x: 200,  y: 180,  w: 260, h: 180, label: 'A Wing' },
+    { x: 650,  y: 140,  w: 280, h: 210, label: 'B Wing' },
+    { x: 1100, y: 220,  w: 320, h: 180, label: 'C Wing' },
+    { x: 1650, y: 220,  w: 360, h: 200, label: 'D Wing' },
+    { x: 2200, y: 260,  w: 380, h: 220, label: 'Gym' },
+  ],
+  rooms: [
+    {
+      id: 'a',
+      name: 'A Wing',
+      enter: { x: 200, y: 180, w: 260, h: 180 },
+      interior: {
+        w: 1100, h: 700, bg: '#1c2538',
+        spawn: { x: 240, y: 340 },
+        objects: [
+          { x: 120, y: 120, w: 220, h: 120, label: 'Tables' },
+          { x: 420, y: 280, w: 180, h: 90,  label: 'Sofa'   },
+        ]
+      },
+      subrooms: [
+        {
+          id: 'a1', name: 'Classroom 1',
+          interior: { w: 1000, h: 680, bg: '#1f2a44',
+            spawn: { x: 200, y: 320 },
+            objects: [
+              { x: 120, y: 120, w: 200, h: 120, label: 'Desks' },
+              { x: 520, y: 200, w: 160, h: 100, label: 'Lab' },
+            ]
+          }
+        },
+        {
+          id: 'a2', name: 'Classroom 2',
+          interior: { w: 1000, h: 680, bg: '#22304f',
+            spawn: { x: 240, y: 360 },
+            objects: [
+              { x: 140, y: 160, w: 180, h: 120, label: 'Desks' },
+              { x: 520, y: 240, w: 200, h: 100, label: 'Project' },
+            ]
+          }
+        }
+      ]
+    },
+    {
+      id: 'c',
+      name: 'C Wing',
+      enter: { x: 1100, y: 220, w: 320, h: 180 },
+      interior: {
+        w: 1200, h: 720, bg: '#192238',
+        spawn: { x: 260, y: 360 },
+        objects: [
+          { x: 160, y: 160, w: 260, h: 140, label: 'Benches' },
+          { x: 560, y: 260, w: 190, h: 100, label: 'Whiteboard' },
+        ]
+      },
+      subrooms: [
+        {
+          id: 'c1', name: 'Classroom 1',
+          interior: { w: 1000, h: 680, bg: '#233456',
+            spawn: { x: 220, y: 340 },
+            objects: [
+              { x: 120, y: 130, w: 220, h: 120, label: 'Desks' },
+              { x: 520, y: 220, w: 180, h: 100, label: 'Lab' },
+            ]
+          }
+        }
+      ]
+    },
+  ]
+};
+
+// Try to load ./campus.json if present (must be valid JSON, no comments)
+try {
+  const raw = fs.readFileSync(path.join(__dirname, 'campus.json'), 'utf8');
+  const parsed = JSON.parse(raw);
+  // Shallow-merge onto defaults
+  world = { ...world, ...parsed };
+} catch (e) {
+  console.log('[server] campus.json not loaded (using defaults):', e.message);
+}
+
+// ------------------------------ App & IO ------------------------------
 const app = express();
 const server = http.createServer(app);
 const io = new Server(server, {
-  transports: ['websocket', 'polling'], // allow both; client may force polling
-  path: '/socket.io',
-  cors: { origin: '*', methods: ['GET', 'POST'], credentials: true },
-  pingInterval: 25000,
-  pingTimeout: 120000
+  // Allow polling (client forces it), but keep websockets if clients allow
+  transports: ['polling', 'websocket'],
+  cors: { origin: '*', methods: ['GET','POST'] },
+  path: '/socket.io'
 });
 
-const PORT = process.env.PORT || 3000;
-app.use(express.static(path.join(__dirname, 'public')));
+// Serve static files (index.html, client.js, style.css, campus.json)
+app.use(express.static(__dirname, { fallthrough: true }));
 
-// ---------- Load campus.json (supports // and /* */ comments) ----------
-function loadCampusJSON(file) {
-  let raw = '{}';
-  try {
-    raw = fs.readFileSync(file, 'utf8');
-  } catch (e) {
-    console.warn('[campus.json] not found, using defaults.');
-  }
-  const cleaned = String(raw)
-    // remove /* block comments */
-    .replace(/\/\*[\s\S]*?\*\//g, '')
-    // remove // line comments
-    .replace(/(^|[^:])\/\/.*$/gm, '$1')
-    // collapse stray trailing commas (JSON5-ish guard)
-    .replace(/,\s*([}\]])/g, '$1');
-  try {
-    return JSON.parse(cleaned);
-  } catch (e) {
-    console.error('Failed to parse campus.json. Error:', e.message);
-    console.error('Tip: campus.json must be valid JSON (no comments) or rely on the cleaner above.');
-    throw e;
-  }
+// Health
+app.get('/healthz', (_req, res) => res.json({ ok: true }));
+
+// ------------------------------ Players ------------------------------
+/**
+ * Player model
+ * - campus position: x, y
+ * - room position:   rx, ry
+ * - user input:      input = { up,down,left,right }
+ * - color:           for avatar
+ * - velocities:      kvx/kvy (campus knockback), rkvx/rkvy (room knockback)
+ * - chat bubble:     chatText, chatTs
+ */
+const players = new Map();
+
+function safeName(s = '') {
+  s = String(s).slice(0, 16);
+  // letters, numbers, spaces, - ' .
+  s = s.replace(/[^A-Za-z0-9 \-'.]/g, '').trim();
+  return s || 'Penguin';
+}
+function randomColor() {
+  const hues = [200, 215, 225, 240, 260];
+  const h = hues[Math.floor(Math.random()*hues.length)];
+  return `hsl(${h}deg 70% 70%)`;
 }
 
-const WORLD = loadCampusJSON(path.join(__dirname, 'public', 'campus.json'));
-
-// ---------- Helpers for room building ----------
-function hashHue(str) { let h=0; for (let i=0;i<str.length;i++) h=(h*31+str.charCodeAt(i))|0; return Math.abs(h)%360; }
-function normInterior(i, name) {
-  const hue = hashHue(name || 'room');
-  return {
-    w: (i && (i.w || i.width)) || 1100,
-    h: (i && (i.h || i.height)) || 700,
-    bg: (i && i.bg) || `hsl(${hue} 35% 20%)`,
-    objects: Array.isArray(i?.objects) ? i.objects : []
-  };
+function roomById(id) {
+  return (world.rooms || []).find(r => r.id === id) || null;
+}
+function subroomById(room, subId) {
+  if (!room) return null;
+  return (room.subrooms || []).find(s => s.id === subId) || null;
 }
 
-// Build authoritative rooms array from WORLD.rooms (preferred) or WORLD.obstacles (fallback)
-function buildRooms(world) {
-  const explicit = Array.isArray(world.rooms) ? world.rooms : [];
-  if (explicit.length) {
-    return explicit.map((r, i) => ({
-      id: r.id || `room_${i}`,
-      name: r.name || r.id || `Room ${i+1}`,
-      enter: r.enter && { x: r.enter.x|0, y: r.enter.y|0, w: r.enter.w|0, h: r.enter.h|0 },
-      interior: normInterior(r.interior, r.name || r.id),
-      subrooms: Array.isArray(r.subrooms) ? r.subrooms.map((s, j) => ({
-        id: s.id || `sub_${j}`,
-        name: s.name || s.id || `Subroom ${j+1}`,
-        interior: normInterior(s.interior, (r.name || r.id || 'room') + '_' + (s.name || s.id || 'sub'))
-      })) : []
-    }));
-  }
-  // Fallback: every obstacle becomes an enterable room with no subrooms
-  const obs = Array.isArray(world.obstacles) ? world.obstacles : [];
-  return obs.map((o, i) => ({
-    id: `auto_${i}`,
-    name: o.label || `Room ${i+1}`,
-    enter: { x: o.x|0, y: o.y|0, w: o.w|0, h: o.h|0 },
-    interior: normInterior(null, o.label || `Room ${i+1}`),
-    subrooms: []
-  }));
-}
-
-const ROOMS = buildRooms(WORLD);
-function findRoomById(id) { return ROOMS.find(r => r.id === id) || null; }
-function findSubroom(roomId, subId) {
-  const r = findRoomById(roomId); if (!r) return null;
-  return (r.subrooms || []).find(s => s.id === subId) || null;
-}
-
-// ---------- Game constants ----------
-const TICK_RATE = 20;
-const DT = 1 / TICK_RATE;
-const SPEED = 180; // px/sec
-const PLAYER_RADIUS = 18;
-
-const NAME_MAX = 16;
-const CHAT_MAX_LEN = 140;
-const CHAT_COOLDOWN_MS = 600;
-
-// Allowed "toys" that can be held (displayed as emoji on the client)
-const TOYS = new Set(['bat','cake','pizza','mic','book','flag','laptop','ball','paint']);
-
-// ---------- State ----------
-const players = new Map(); // socket.id -> player
-const inputs  = new Map(); // socket.id -> { up,down,left,right }
-
-// ---------- Utils ----------
-function clamp(v, lo, hi) { return Math.max(lo, Math.min(hi, v)); }
-function randomColor() { const h = Math.floor(Math.random()*360); return `hsl(${h} 70% 60%)`; }
-function sanitizeName(raw) {
-  if (typeof raw !== 'string') return 'Student';
-  let s = raw.trim();
-  if (!s) s = 'Student';
-  s = s.replace(/[^\w\s\-'.]/g, '');
-  return s.slice(0, NAME_MAX);
-}
-function sanitizeChat(raw) {
-  let s = String(raw ?? '').trim();
-  if (!s) return '';
-  // Allow letters, numbers, punctuation, and spaces
-  s = s.replace(/[^\p{L}\p{N}\p{P}\p{Zs}]/gu, '');
-  return s.slice(0, CHAT_MAX_LEN);
-}
-
-// ---------- Socket.IO ----------
+// ------------------------------ Socket handlers ------------------------------
 io.on('connection', (socket) => {
-  // Client sends chosen name
-  socket.on('join', (rawName) => {
-    // Unique-ish name
-    let name = sanitizeName(rawName) || 'Student';
-    const taken = new Set(Array.from(players.values()).map(p => p.name));
-    if (taken.has(name)) { let i = 2; while (taken.has(`${name} ${i}`)) i++; name = `${name} ${i}`; }
-
-    const p = {
-      id: socket.id,
-      name,
-      color: randomColor(),
-      // campus coords
-      x: WORLD.spawn?.x ?? 1600,
-      y: WORLD.spawn?.y ?? 1000,
-      // room/subroom state
-      roomId: null,
-      subroomId: null,
-      // interior coords (when inside a room/subroom)
-      rx: 0, ry: 0,
-      // toy state
-      equippedKind: null, // one of TOYS or null
-      // chat
-      chat: null,
-      _lastChatAt: 0
-    };
-    players.set(socket.id, p);
-    inputs.set(socket.id, { up:false, down:false, left:false, right:false });
-
-    // Send initial payload
-    socket.emit('init', {
-      id: socket.id,
-      world: { ...WORLD, rooms: ROOMS }, // authoritative rooms with subrooms
-      radius: PLAYER_RADIUS,
-      toys: Array.from(TOYS)
-    });
+  // Create a stub player; becomes "active" on 'join'
+  players.set(socket.id, {
+    id: socket.id,
+    name: 'Penguin',
+    color: randomColor(),
+    x: 120 + Math.random()*220, y: 140 + Math.random()*180,
+    rx: 240, ry: 340,
+    // knockback velocities only; movement uses direct base speed from input
+    kvx: 0, kvy: 0,     // campus knockback velocity (px/s)
+    rkvx: 0, rkvy: 0,   // room knockback velocity
+    roomId: null,
+    subroomId: null,
+    equippedKind: null,
+    input: { up:false, down:false, left:false, right:false },
+    chatText: null,
+    chatTs: 0,
+    lastHitTs: 0
   });
 
-  // Movement input
-  socket.on('input', (state) => {
-    const inp = inputs.get(socket.id);
-    if (!inp) return;
-    inp.up = !!state.up; inp.down = !!state.down; inp.left = !!state.left; inp.right = !!state.right;
+  // Send init snapshot
+  socket.emit('init', {
+    id: socket.id,
+    radius: 18,
+    world,
+    toys: TOYS
+  });
+
+  // Join (set name/color fresh)
+  socket.on('join', (rawName) => {
+    const p = players.get(socket.id);
+    if (!p) return;
+    p.name = safeName(rawName);
+    if (!p.color) p.color = randomColor();
+  });
+
+  // Input
+  socket.on('input', (inp) => {
+    const p = players.get(socket.id);
+    if (!p) return;
+    // Coerce booleans
+    p.input = {
+      up: !!inp.up, down: !!inp.down,
+      left: !!inp.left, right: !!inp.right
+    };
   });
 
   // Chat
-  socket.on('chat', (raw) => {
-    const p = players.get(socket.id); if (!p) return;
-    const now = Date.now();
-    if (now - p._lastChatAt < CHAT_COOLDOWN_MS) return; // debounce
-    const text = sanitizeChat(raw);
-    if (!text) return;
-    p.chat = { text, ts: now };
-    p._lastChatAt = now;
+  socket.on('chat', (txt) => {
+    const p = players.get(socket.id);
+    if (!p) return;
+    const t = String(txt || '').slice(0, 140);
+    p.chatText = t;
+    p.chatTs = Date.now();
   });
 
-  // Toys
+  // Equip toy
   socket.on('equipKind', ({ kind }) => {
-    const p = players.get(socket.id); if (!p) return;
-    if (!TOYS.has(kind)) return;
+    const p = players.get(socket.id);
+    if (!p) return;
+    if (!TOYS.includes(kind)) return;
     p.equippedKind = kind;
   });
   socket.on('clearEquip', () => {
-    const p = players.get(socket.id); if (!p) return;
+    const p = players.get(socket.id);
+    if (!p) return;
     p.equippedKind = null;
   });
 
-  // Rooms & subrooms
+  // Rooms
   socket.on('enterRoom', ({ roomId }) => {
-    const p = players.get(socket.id); if (!p) return;
-    const rm = findRoomById(roomId); if (!rm) return;
-    p.roomId = rm.id;
-    p.subroomId = null; // lobby
-    p.rx = Math.floor(rm.interior.w / 2);
-    p.ry = Math.floor(rm.interior.h / 2);
-    socket.emit('roomChanged', { roomId: p.roomId, subroomId: null });
+    const p = players.get(socket.id);
+    const r = roomById(roomId);
+    if (!p || !r) return;
+    p.roomId = r.id;
+    p.subroomId = null;
+    const spawn = r?.interior?.spawn || { x: (r?.interior?.w || 1000)/2, y: (r?.interior?.h || 600)/2 };
+    p.rx = spawn.x; p.ry = spawn.y;
+    // clear momentum between spaces
+    p.kvx = p.kvy = 0; p.rkvx = p.rkvy = 0;
+    socket.emit('roomChanged', { roomId: p.roomId, subroomId: p.subroomId });
   });
 
   socket.on('enterSubroom', ({ roomId, subroomId }) => {
-    const p = players.get(socket.id); if (!p) return;
-    const rm = findRoomById(roomId); if (!rm) return;
-    const sr = findSubroom(rm.id, subroomId); if (!sr) return;
-    p.roomId = rm.id;
+    const p = players.get(socket.id);
+    const r = roomById(roomId);
+    const sr = subroomById(r, subroomId);
+    if (!p || !r || !sr) return;
+    p.roomId = r.id;
     p.subroomId = sr.id;
-    p.rx = Math.floor(sr.interior.w / 2);
-    p.ry = Math.floor(sr.interior.h / 2);
+    const spawn = sr?.interior?.spawn || { x: (sr?.interior?.w || 1000)/2, y: (sr?.interior?.h || 600)/2 };
+    p.rx = spawn.x; p.ry = spawn.y;
+    p.kvx = p.kvy = 0; p.rkvx = p.rkvy = 0;
     socket.emit('roomChanged', { roomId: p.roomId, subroomId: p.subroomId });
   });
 
   socket.on('leaveRoom', () => {
-    const p = players.get(socket.id); if (!p) return;
+    const p = players.get(socket.id);
+    if (!p) return;
     p.roomId = null;
     p.subroomId = null;
+    p.kvx = p.kvy = 0; p.rkvx = p.rkvy = 0;
     socket.emit('roomChanged', { roomId: null, subroomId: null });
   });
 
+  // Actions (right-click / space / E)
+  socket.on('action', ({ kind, target, aid }) => {
+    const a = players.get(socket.id);
+    if (!a) return;
+    if (a.equippedKind !== kind) return;
+
+    const inRoom = !!a.roomId;
+    const origin = inRoom ? { x: a.rx, y: a.ry } : { x: a.x, y: a.y };
+    const tgt = clampTarget(kind, target, inRoom ? a.roomId : null, a.subroomId);
+
+    const payload = {
+      id: a.id,
+      kind,
+      aid,                   // echo back client action id for reconciliation
+      space: inRoom ? 'room' : 'campus',
+      roomId: a.roomId || null,
+      subroomId: a.subroomId || null,
+      origin,
+      target: tgt,
+      ts: Date.now()        // server time for clock sync
+    };
+
+    io.emit('action', payload);
+
+    // Only the bat causes a “hit” + knockback. Add others later if desired.
+    if (kind === 'bat') doBatHit(a, payload);
+  });
+
+  // Disconnect
   socket.on('disconnect', () => {
     players.delete(socket.id);
-    inputs.delete(socket.id);
   });
 });
 
-// ---------- Simulation tick ----------
-setInterval(() => {
-  for (const [id, p] of players) {
-    const inp = inputs.get(id); if (!inp) continue;
+// ------------------------------ Helpers (server) ------------------------------
+function clampTarget(kind, target, roomId, subroomId) {
+  // We’ll just clamp to campus bounds (or room interior bounds if we had them on server).
+  // Since effects are mostly cosmetic, light clamping is fine.
+  const t = target || { x: 0, y: 0 };
+  if (!roomId) {
+    return {
+      x: Math.max(0, Math.min(world.width,  t.x|0)),
+      y: Math.max(0, Math.min(world.height, t.y|0))
+    };
+  } else {
+    // If we know room interior size, clamp to that. Otherwise just sanitize numbers.
+    const r = roomById(roomId);
+    let w = r?.interior?.w || 1200, h = r?.interior?.h || 720;
+    if (subroomId) {
+      const sr = subroomById(r, subroomId);
+      w = sr?.interior?.w || w;
+      h = sr?.interior?.h || h;
+    }
+    return {
+      x: Math.max(0, Math.min(w, t.x|0)),
+      y: Math.max(0, Math.min(h, t.y|0))
+    };
+  }
+}
 
-    let dx = 0, dy = 0;
-    if (inp.left)  dx -= 1;
-    if (inp.right) dx += 1;
-    if (inp.up)    dy -= 1;
-    if (inp.down)  dy += 1;
+function doBatHit(attacker, swing) {
+  const inRoom = !!attacker.roomId;
+  const ax = swing.origin.x, ay = swing.origin.y;
+  const ang = Math.atan2(swing.target.y - ay, swing.target.x - ax);
+  const now = Date.now();
 
-    if (dx || dy) {
-      const len = Math.hypot(dx, dy) || 1;
-      dx /= len; dy /= len;
+  for (const [sid, v] of players) {
+    if (sid === attacker.id) continue;
 
-      if (p.roomId) {
-        // Inside a room or subroom
-        const rm = findRoomById(p.roomId);
-        const sr = p.subroomId ? findSubroom(p.roomId, p.subroomId) : null;
-        const W = (sr?.interior?.w) || (rm?.interior?.w) || 1100;
-        const H = (sr?.interior?.h) || (rm?.interior?.h) || 700;
-        p.rx = clamp(p.rx + dx * SPEED * DT, PLAYER_RADIUS, W - PLAYER_RADIUS);
-        p.ry = clamp(p.ry + dy * SPEED * DT, PLAYER_RADIUS, H - PLAYER_RADIUS);
-      } else {
-        // On campus
-        const W = WORLD.width  || 3200;
-        const H = WORLD.height || 2000;
-        p.x = clamp(p.x + dx * SPEED * DT, PLAYER_RADIUS, W - PLAYER_RADIUS);
-        p.y = clamp(p.y + dy * SPEED * DT, PLAYER_RADIUS, H - PLAYER_RADIUS);
-      }
+    // same space filter
+    if (!inRoom) {
+      if (v.roomId) continue;
+      var px = v.x,  py = v.y, kvx = 'kvx', kvy = 'kvy';
+    } else {
+      if (v.roomId !== attacker.roomId) continue;
+      if (!!v.subroomId !== !!attacker.subroomId) continue;
+      if (v.subroomId && v.subroomId !== attacker.subroomId) continue;
+      var px = v.rx, py = v.ry, kvx = 'rkvx', kvy = 'rkvy';
+    }
+
+    const dx = px - ax, dy = py - ay;
+    const dist = Math.hypot(dx, dy);
+    if (dist > BAT_RANGE_PX) continue;
+
+    // within arc?
+    const toVictim = Math.atan2(dy, dx);
+    let dAng = Math.abs(((toVictim - ang + Math.PI) % (2*Math.PI)) - Math.PI);
+    if (dAng > BAT_ARC_RAD * 0.5) continue;
+
+    // per-victim i-frames
+    if (now - (v.lastHitTs || 0) < BAT_HIT_COOLDOWN_MS) continue;
+    v.lastHitTs = now;
+
+    // knockback direction (from attacker -> victim)
+    const nx = dist > 0 ? dx / dist : Math.cos(ang);
+    const ny = dist > 0 ? dy / dist : Math.sin(ang);
+
+    // apply knockback
+    v[kvx] += nx * BAT_KNOCK_PXPS;
+    v[kvy] += ny * BAT_KNOCK_PXPS;
+
+    // notify clients for hit flash / shake
+    io.emit('hit', {
+      victimId: v.id,
+      fromId: attacker.id,
+      space: swing.space,
+      roomId: swing.roomId,
+      subroomId: swing.subroomId,
+      dir: { x: nx, y: ny },
+      ts: now
+    });
+  }
+}
+
+// ------------------------------ Simulation tick ------------------------------
+function step() {
+  for (const [, p] of players) {
+    // Base movement from input (no inertia)
+    let ix = (p.input.right ? 1 : 0) - (p.input.left ? 1 : 0);
+    let iy = (p.input.down ? 1 : 0) - (p.input.up ? 1 : 0);
+    if (ix || iy) {
+      const n = Math.hypot(ix, iy);
+      ix /= n; iy /= n;
+    }
+
+    if (!p.roomId) {
+      // campus coords
+      const baseVx = ix * CAMPUS_SPEED;
+      const baseVy = iy * CAMPUS_SPEED;
+      p.x  += (baseVx + p.kvx) * DT;
+      p.y  += (baseVy + p.kvy) * DT;
+
+      // world bounds
+      p.x = Math.max(0, Math.min(world.width,  p.x));
+      p.y = Math.max(0, Math.min(world.height, p.y));
+
+      // decay knockback velocity
+      p.kvx *= FRICTION;
+      p.kvy *= FRICTION;
+    } else {
+      // room coords
+      const baseVx = ix * ROOM_SPEED;
+      const baseVy = iy * ROOM_SPEED;
+      p.rx += (baseVx + p.rkvx) * DT;
+      p.ry += (baseVy + p.rkvy) * DT;
+
+      // interior bounds clamp (use room or subroom size)
+      const r  = roomById(p.roomId);
+      const sr = subroomById(r, p.subroomId);
+      const w = (sr?.interior?.w) || (r?.interior?.w) || 1200;
+      const h = (sr?.interior?.h) || (r?.interior?.h) || 720;
+      p.rx = Math.max(0, Math.min(w, p.rx));
+      p.ry = Math.max(0, Math.min(h, p.ry));
+
+      p.rkvx *= FRICTION;
+      p.rkvy *= FRICTION;
     }
   }
 
-  // Broadcast world snapshot
-  const snapshot = Array.from(players.values()).map(p => ({
-    id: p.id,
-    name: p.name,
-    color: p.color,
-    // campus coords
-    x: Math.round(p.x), y: Math.round(p.y),
-    // room/subroom
-    roomId: p.roomId,
-    subroomId: p.subroomId,
-    rx: Math.round(p.rx), ry: Math.round(p.ry),
-    // toy
-    equippedKind: p.equippedKind || null,
-    // chat
-    chatText: p.chat?.text || null,
-    chatTs: p.chat?.ts || 0
-  }));
+  // Broadcast snapshot with server timestamp for client clock sync
+  const snap = {
+    t: Date.now(),
+    players: Array.from(players.values()).map(p => ({
+      id: p.id,
+      name: p.name,
+      color: p.color,
+      x: Math.round(p.x), y: Math.round(p.y),
+      rx: Math.round(p.rx), ry: Math.round(p.ry),
+      roomId: p.roomId,
+      subroomId: p.subroomId,
+      equippedKind: p.equippedKind || null,
+      chatText: p.chatText,
+      chatTs: p.chatTs
+    }))
+  };
+  io.emit('state', snap);
+}
 
-  io.emit('state', { t: Date.now(), players: snapshot });
-}, 1000 / TICK_RATE);
+setInterval(step, TICK_MS);
 
-// ---------- Start server ----------
+// ------------------------------ Start ------------------------------
 server.listen(PORT, () => {
-  console.log(`Virtual Campus server running at http://localhost:${PORT}`);
+  console.log(`✅ Virtual Campus server running on http://localhost:${PORT}`);
 });
