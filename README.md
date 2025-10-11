@@ -1,47 +1,38 @@
-<p align="center">
-  <a href="https://fl0.com/" target="blank">
-    <img src="https://user-images.githubusercontent.com/88681427/217122968-e6132cad-1944-4ebe-9ec1-105af6a18c4f.png">
-  </a>
-</p>
+# CHS Virtual Campus (PixelCHS)
 
-<h2 align="center">Node.js Quickstart</h2>
-<p align="center">Backend engineering, supercharged.</p>
+A lightweight, Club-Penguin-style 2D web world for **Citrus High School (CHS)**. Walk around the campus, chat with classmates, enter wings/rooms/subrooms, and play with simple toys (bat, ball, cake, etc.). Built with **Node.js**, **Express**, and **Socket.IO**. Works even on restricted school Wi-Fi by using long-polling.
 
-## Overview
+---
 
-Use this repository to get up and running on FL0 with the following stack:
+## ✨ Features
 
-<table>
-<tr>
-  <th>Language</th>
-  <td>Javascript</td>
-</tr>
-<tr>
-  <th>Router</th>
-  <td>Express</td>
-</tr>
-</table>
+- **Open 2D campus:** Move freely on a top-down map.
+- **Enterable interiors:** Buildings lead to **rooms** and **subrooms** (e.g., `C Wing → Classroom 1`).
+- **Live multiplayer:** Positions, chat bubbles, toys, and actions are synced for everyone.
+- **Chat bubbles:** Press **Enter**, type, and your message floats next to your avatar.
+- **Toys & actions:** Equip toys from the hotbar, **right-click / Space / E** to use  
+  - **Bat**: swing arc + hit FX + knockback
+  - **Ball**: kick animation
+  - **Cake / Pizza / Mic / Book / Flag / Laptop / Paint**: fun, cosmetic effects
+- **Occupancy badges:** See how many people are in a room/subroom.
+- **Mobile D-pad:** On phones, tap the built-in D-pad to move.
+- **Name & identity:** Pick a name at entry. (Duplicate name protection included.)
+- **Branding:** Includes modern **favicon** and **logo** for `pixelchs.com`.
 
-## Getting Started
+---
 
-Clone this repo and run the following commands from the project root:
+## 🕹 Controls
 
-1. `npm install`
-2. `npm start`
-3. Visit http://localhost:3000 to see your app running
+- **Move:** `WASD` or arrow keys (mobile D-pad supported)
+- **Enter building:** Hover building, press **Enter**
+- **Chat:** **Enter** (open), type, **Enter** (send)
+- **Leave room:** **Esc** or **Q**
+- **Equip toy:** Number keys **1–9** (or click hotbar)
+- **Clear toy:** **0**
+- **Use toy:** **Right-click**, **Space**, or **E**
+- **Subrooms:** Inside a room with subrooms, press **0** for Lobby, **1–9** to jump to subrooms
 
-## Deploying to FL0
+---
 
-Checkout our [Getting Started Guide](https://docs.fl0.com) in the FL0 documentation!
+## 📁 Project structure
 
-## Questions
-
-If you have any questions about FL0 or this template codebase please head on over to our [Discord channel](https://discord.gg/AmmVTt9Jrw).
-
-## Issues
-
-Any issues or feature requests can be raised on the [Issues page](https://github.com/fl0zone/template-nodejs/issues) of this repo.
-
-## License
-
-This template repository is [MIT licensed](LICENSE).
