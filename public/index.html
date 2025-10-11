@@ -14,8 +14,8 @@
 
   <div class="hud">
     <div class="title">Virtual Campus</div>
-    <div class="hint">WASD/Arrows to move • Enter to chat • Tap D-pad on mobile</div>
-    <div id="status" class="status">🔴 Disconnected</div>
+    <div class="hint">WASD/Arrows to move • Hover a building + Enter to go inside • Enter to chat</div>
+    <div id="status" class="status">🟡 Connecting…</div>
   </div>
 
   <div class="name-modal" id="nameModal">
@@ -31,11 +31,11 @@
 
   <!-- Mobile D-pad -->
   <div class="dpad" id="dpad">
-    <button data-dir="up">▲</button>
+    <button data-dir="up" aria-label="Up">▲</button>
     <div class="mid">
-      <button data-dir="left">◀</button>
-      <button data-dir="down">▼</button>
-      <button data-dir="right">▶</button>
+      <button data-dir="left" aria-label="Left">◀</button>
+      <button data-dir="down" aria-label="Down">▼</button>
+      <button data-dir="right" aria-label="Right">▶</button>
     </div>
   </div>
 
@@ -45,6 +45,6 @@
   </form>
 
   <script src="/socket.io/socket.io.js"></script>
-  <script src="client.js"></script>
+  <script src="client.js?v=vc-toys-subrooms-1"></script>
 </body>
 </html>
