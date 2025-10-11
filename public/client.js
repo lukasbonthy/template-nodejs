@@ -17,6 +17,7 @@
 
   let me = null, radius = 18;
   let world = { width: 3200, height: 2000, obstacles: [], rooms: [] };
+  let TOYS = ['bat','cake','pizza','mic','book','flag','laptop','ball','paint']; // server overwrites via init
 
   let lastState = { t: 0, players: [] };
   let currentState = { t: 0, players: [] };
@@ -30,7 +31,7 @@
   let camX = 0, camY = 0;          // campus
   let roomCamX = 0, roomCamY = 0;  // room/subroom
 
-  // Mouse hover
+  // Mouse hover (for buildings + hotbar clicks)
   let mouseX = 0, mouseY = 0;
   canvas.addEventListener('mousemove', (e) => {
     const r = canvas.getBoundingClientRect();
@@ -38,7 +39,7 @@
     mouseY = (e.clientY - r.top)  * (canvas.height / r.height);
   });
 
-  // Click handling (subroom dock)
+  // Click handling (subroom dock + hotbar)
   let clickable = []; // [{x,y,w,h, onClick}]
   canvas.addEventListener('click', (e) => {
     const r = canvas.getBoundingClientRect();
@@ -74,7 +75,7 @@
   function sendInput(){ socket.emit('input', input); }
 
   document.addEventListener('keydown', (e) => {
-    // ENTER: enter hovered building on campus
+    // ENTER: enter hovered building on campus (else focus chat)
     if (e.code === 'Enter' && document.activeElement !== chatInput) {
       if (!currentRoomId) {
         const rect = rectUnderMouse();
@@ -86,29 +87,12 @@
       }
       chatInput.focus(); return;
     }
+
     if (e.code === 'Escape' || e.code === 'KeyQ') { socket.emit('leaveRoom'); return; }
 
-    // Number keys: 0 = Lobby, 1..9 = subrooms (when inside a room)
-    if (currentRoomId) {
-      const digit = e.key >= '0' && e.key <= '9' ? Number(e.key) : null;
-      if (digit !== null) {
-        e.preventDefault();
-        const rm = getRoomById(currentRoomId);
-        if (!rm) return;
-        if (digit === 0) {
-          // Lobby
-          socket.emit('enterRoom', { roomId: rm.id });
-        } else {
-          const idx = digit - 1;
-          const sr = (rm.subrooms || [])[idx];
-          if (sr) socket.emit('enterSubroom', { roomId: rm.id, subroomId: sr.id });
-        }
-        return;
-      }
-    }
-
-    const dir = keys.get(e.code); if (!dir) return;
-    if (!input[dir]) { input[dir] = true; sendInput(); }
+    // Movement
+    const dir = keys.get(e.code);
+    if (dir) { if (!input[dir]) { input[dir] = true; sendInput(); } return; }
   });
   document.addEventListener('keyup', (e) => {
     const dir = keys.get(e.code); if (!dir) return;
@@ -135,6 +119,7 @@
     me = payload.id;
     radius = payload.radius || 18;
     world = { ...world, ...payload.world }; // authoritative rooms with subrooms
+    if (Array.isArray(payload.toys)) TOYS = payload.toys;
     const val = nameInput.value.trim(); if (val) localStorage.setItem('campusName', val);
     nameModal.style.display = 'none';
   });
@@ -159,12 +144,13 @@
   function clamp(v,lo,hi){ return Math.max(lo, Math.min(hi, v)); }
   function lerpPlayer(pa,pb,t){
     if (!pa) return pb; if (!pb) return pa;
-    if (pa.roomId !== pb.roomId || pa.subroomId !== pb.subroomId) return pb; // snap when switching spaces
+    if (pa.roomId !== pb.roomId || pa.subroomId !== pb.subroomId) return pb; // snap on space change
     return {
       id: pb.id, name: pb.name, color: pb.color,
       x: lerp(pa.x, pb.x, t), y: lerp(pa.y, pb.y, t),
       rx: lerp(pa.rx ?? pb.rx, pb.rx, t), ry: lerp(pa.ry ?? pb.ry, pb.ry, t),
       roomId: pb.roomId, subroomId: pb.subroomId,
+      equippedKind: pb.equippedKind || null,
       chatText: pb.chatText, chatTs: pb.chatTs
     };
   }
@@ -195,7 +181,7 @@
     return map;
   }
 
-  // Drawing
+  // Drawing (Campus)
   function drawGridCampus(){
     const grid = 120;
     const startX = -((camX % grid) + grid) % grid;
@@ -207,7 +193,7 @@
 
   function drawOccupancyBadge(x, y, count) {
     const txt = `👥 ${count}`;
-    ctx.font = '600 12px Inter, sans-serif';
+    ctx.font = '600 12px Inter, "Apple Color Emoji", "Segoe UI Emoji", system-ui';
     const padX = 8, padY = 4;
     const w = Math.ceil(ctx.measureText(txt).width) + padX*2;
     const h = 20;
@@ -237,12 +223,10 @@
         ctx.fillText(line, sx + o.w/2, sy + 18 + i*18);
       }
 
-      // occupancy badge (if matched to a room)
+      // occupancy
       const rm = roomForRect(o);
       const count = rm ? (occ.get(rm.id) || 0) : 0;
-      if (count > 0) {
-        drawOccupancyBadge(sx + o.w - 60, sy + 6, count);
-      }
+      if (count > 0) drawOccupancyBadge(sx + o.w - 60, sy + 6, count);
 
       // hover detection
       if (mxW >= o.x && mxW <= o.x + o.w && myW >= o.y && myW <= o.y + o.h) hover = o;
@@ -262,6 +246,7 @@
     return hover;
   }
 
+  // Drawing (Players + Chat + Toys)
   function drawAvatarAndName(x, y, name, color, isMe){
     ctx.beginPath(); ctx.arc(x+2, y+2, radius+1, 0, Math.PI*2); ctx.fillStyle='rgba(0,0,0,0.25)'; ctx.fill();
     ctx.beginPath(); ctx.arc(x, y, radius, 0, Math.PI*2);
@@ -272,7 +257,7 @@
   }
   function wrapLines(text, maxWidth){
     const words = text.split(/\s+/), lines=[]; let line='';
-    ctx.font='600 14px Inter, sans-serif';
+    ctx.font='600 14px Inter, "Apple Color Emoji", "Segoe UI Emoji", system-ui';
     for (const w of words) { const test = line ? line+' '+w : w;
       if (ctx.measureText(test).width <= maxWidth) { line=test; } else { if (line) lines.push(line); line = w; } }
     if (line) lines.push(line); return lines.slice(0,4);
@@ -305,6 +290,78 @@
     }
   }
 
+  // --- TOYS ---
+  const TOY_EMOJI = {
+    bat: '🏏', cake: '🎂', pizza: '🍕', mic: '🎤', book: '📕', flag: '🚩', laptop: '💻', ball: '⚽', paint: '🎨'
+  };
+  function drawHeldItem(kind, x, y, isMe){
+    if (!kind) return;
+    const offR = radius + 6;
+    // place to the right of avatar; if near right edge, flip to left
+    let ix = x + offR, iy = y + 2;
+    if (x > canvas.width - 120) ix = x - offR - 12;
+
+    // Emoji toys
+    if (TOY_EMOJI[kind]) {
+      ctx.font = '24px "Apple Color Emoji", "Segoe UI Emoji", system-ui';
+      ctx.textAlign = 'center';
+      ctx.fillText(TOY_EMOJI[kind], ix, iy + 8);
+      return;
+    }
+    // fallback bat drawing
+    if (kind === 'bat') {
+      ctx.save();
+      ctx.translate(ix, iy);
+      ctx.rotate(-0.6);
+      ctx.fillStyle = '#a0713d'; roundRect(-4, -20, 8, 40, 4); ctx.fill();
+      ctx.fillStyle = '#c58a4a'; roundRect(-6, -8, 12, 20, 6); ctx.fill();
+      ctx.restore();
+    }
+  }
+
+  // Hotbar
+  function drawHotbar(myEquipped){
+    // bottom-center bar
+    const items = TOYS;
+    const pad = 10, slot = 40, gap = 8;
+    const totalW = items.length * slot + (items.length - 1) * gap + pad*2;
+    const x = Math.floor((canvas.width - totalW)/2);
+    const y = canvas.height - 68;
+
+    // frame
+    ctx.fillStyle = 'rgba(0,0,0,0.55)'; ctx.fillRect(x, y, totalW, 56);
+    ctx.strokeStyle = 'rgba(255,255,255,0.12)'; ctx.strokeRect(x, y, totalW, 56);
+
+    clickable = clickable.filter(c => !c._hotbar); // remove old hotbar clicks
+
+    let cx = x + pad;
+    for (const kind of items) {
+      const isActive = myEquipped === kind;
+      // slot bg
+      ctx.fillStyle = isActive ? 'rgba(255,255,255,0.10)' : 'rgba(255,255,255,0.04)';
+      ctx.fillRect(cx, y + 8, slot, slot);
+      ctx.strokeStyle = isActive ? 'rgba(103,168,255,0.8)' : 'rgba(255,255,255,0.12)';
+      ctx.strokeRect(cx, y + 8, slot, slot);
+      // icon
+      const emoji = TOY_EMOJI[kind] || '🧸';
+      ctx.font = '24px "Apple Color Emoji", "Segoe UI Emoji", system-ui';
+      ctx.textAlign = 'center';
+      ctx.fillText(emoji, cx + slot/2, y + 8 + slot/2 + 8);
+
+      clickable.push({ x: cx, y: y + 8, w: slot, h: slot, onClick: () => {
+        const meP = currentState.players.find(p=>p.id===me);
+        const already = meP?.equippedKind === kind;
+        if (already) socket.emit('clearEquip'); else socket.emit('equipKind', { kind });
+      }, _hotbar: true });
+
+      cx += slot + gap;
+    }
+
+    // hint
+    ctx.fillStyle = '#cbd5ff'; ctx.font = '600 12px Inter, sans-serif'; ctx.textAlign = 'center';
+    ctx.fillText('Click a toy to hold it • Click again to put it away', x + totalW/2, y - 6);
+  }
+
   function rectUnderMouse(){
     const mxW = mouseX + camX, myW = mouseY + camY;
     for (const o of (world.obstacles || [])) {
@@ -313,7 +370,7 @@
     return null;
   }
 
-  // Room drawing
+  // Room UI
   function drawGridRoom(iw, ih){
     const grid = 100;
     const startX = -((roomCamX % grid) + grid) % grid;
@@ -321,6 +378,32 @@
     ctx.strokeStyle = 'rgba(255,255,255,0.05)'; ctx.lineWidth = 1;
     for (let x = startX; x < canvas.width; x += grid) { ctx.beginPath(); ctx.moveTo(x,0); ctx.lineTo(x,canvas.height); ctx.stroke(); }
     for (let y = startY; y < canvas.height; y += grid) { ctx.beginPath(); ctx.moveTo(0,y); ctx.lineTo(canvas.width,y); ctx.stroke(); }
+  }
+
+  function drawDockItem(x, y, w, h, label, count, active, onClick){
+    ctx.fillStyle = active ? 'rgba(255,255,255,0.10)' : 'rgba(0,0,0,0.35)';
+    ctx.fillRect(x, y, w, h);
+    ctx.strokeStyle = active ? 'rgba(103,168,255,0.6)' : 'rgba(255,255,255,0.12)';
+    ctx.strokeRect(x, y, w, h);
+    ctx.font = '600 14px Inter, sans-serif'; ctx.textAlign='left'; ctx.fillStyle='#e8ecff';
+    ctx.fillText(label, x + 12, y + 28);
+    const txt = `👥 ${count}`; const padX=8; const bw = Math.ceil(ctx.measureText(txt).width) + padX*2; const bh = 20;
+    const bx = x + w - bw - 8, by = y + (h - bh)/2;
+    ctx.fillStyle = 'rgba(0,0,0,0.55)'; ctx.fillRect(bx, by, bw, bh);
+    ctx.strokeStyle = 'rgba(255,255,255,0.12)'; ctx.strokeRect(bx, by, bw, bh);
+    ctx.fillStyle = '#e8ecff'; ctx.textAlign='left'; ctx.fillText(txt, bx + padX, by + bh - 6);
+
+    clickable.push({ x, y, w, h, onClick });
+  }
+
+  function occupancyBySubroom(roomId) {
+    const map = new Map();
+    for (const p of currentState.players) {
+      if (p.roomId !== roomId) continue;
+      const key = p.subroomId || 'lobby';
+      map.set(key, (map.get(key) || 0) + 1);
+    }
+    return map;
   }
 
   function drawRoomScene(rm){
@@ -347,7 +430,7 @@
     ctx.fillText('Esc/Q to exit room • 0 = Lobby • 1..9 = Subrooms', canvas.width - 16, 30);
 
     // Subroom dock (left)
-    clickable = clickable.filter(() => false); // reset
+    clickable = clickable.filter(c => !c._dock && !c._hotbar); // keep hotbar entries; clear old dock
     const occ = occupancyBySubroom(rm.id); // keys: 'lobby' or subroomId
     const dockX = 16, dockY = 64, itemW = 220, itemH = 44, gap = 8;
 
@@ -368,23 +451,6 @@
     }
   }
 
-  function drawDockItem(x, y, w, h, label, count, active, onClick){
-    ctx.fillStyle = active ? 'rgba(255,255,255,0.10)' : 'rgba(0,0,0,0.35)';
-    ctx.fillRect(x, y, w, h);
-    ctx.strokeStyle = active ? 'rgba(103,168,255,0.6)' : 'rgba(255,255,255,0.12)';
-    ctx.strokeRect(x, y, w, h);
-    ctx.font = '600 14px Inter, sans-serif'; ctx.textAlign='left'; ctx.fillStyle='#e8ecff';
-    ctx.fillText(label, x + 12, y + 28);
-    // count badge
-    const txt = `👥 ${count}`; const padX=8; const bw = Math.ceil(ctx.measureText(txt).width) + padX*2; const bh = 20;
-    const bx = x + w - bw - 8, by = y + (h - bh)/2;
-    ctx.fillStyle = 'rgba(0,0,0,0.55)'; ctx.fillRect(bx, by, bw, bh);
-    ctx.strokeStyle = 'rgba(255,255,255,0.12)'; ctx.strokeRect(bx, by, bw, bh);
-    ctx.fillStyle = '#e8ecff'; ctx.textAlign='left'; ctx.fillText(txt, bx + padX, by + bh - 6);
-
-    clickable.push({ x, y, w, h, onClick });
-  }
-
   // ---------- Render loop ----------
   function render(dt){
     ctx.fillStyle = '#0b0f14'; ctx.fillRect(0,0,canvas.width,canvas.height);
@@ -396,7 +462,6 @@
       const pa = lastState.players.find(x=>x.id===pb.id);
       interPlayers.push(lerpPlayer(pa, pb, t));
     }
-
     const meP = interPlayers.find(p=>p.id===me);
 
     if (!currentRoomId) {
@@ -410,40 +475,49 @@
       drawBuildingsAndHover();
       for (const p of interPlayers) if (!p.roomId) {
         const x = Math.round(p.x - camX), y = Math.round(p.y - camY);
-        drawAvatarAndName(x, y, p.name, p.color, p.id === me); drawChatAt(x, y, p);
+        drawAvatarAndName(x, y, p.name, p.color, p.id === me);
+        drawHeldItem(p.equippedKind, x, y, p.id === me);
+        drawChatAt(x, y, p);
       }
+
+      // Hotbar (always visible)
+      drawHotbar(meP?.equippedKind || null);
+
     } else {
       // Inside room or subroom
       const rm = getRoomById(currentRoomId);
-      const iw = (currentSubroomId ? (rm?.subrooms||[]).find(s=>s.id===currentSubroomId)?.interior?.w : rm?.interior?.w) || 1100;
-      const ih = (currentSubroomId ? (rm?.subrooms||[]).find(s=>s.id===currentSubroomId)?.interior?.h : rm?.interior?.h) || 700;
-
-      if (meP) {
-        const cx = (currentSubroomId ? meP.rx : meP.rx), cy = (currentSubroomId ? meP.ry : meP.ry);
-        roomCamX = clamp(cx - canvas.width/2, 0, Math.max(0, iw - canvas.width));
-        roomCamY = clamp(cy - canvas.height/2, 0, Math.max(0, ih - canvas.height));
-      } else { roomCamX = roomCamY = 0; }
-
-      // Choose interior to draw: subroom if selected else room
-      const drawRm = (() => {
+      const targetInterior = (() => {
         if (!rm) return null;
         if (currentSubroomId) {
           const sr = (rm.subrooms || []).find(s => s.id === currentSubroomId);
-          if (sr) return { ...sr, name: `${rm.name} → ${sr.name}` };
+          if (sr) return sr.interior;
         }
-        return rm;
+        return rm.interior;
       })();
 
-      if (drawRm) drawRoomScene({ ...rm, interior: drawRm.interior, name: rm.name, subrooms: rm.subrooms });
+      const iw = targetInterior?.w || 1100, ih = targetInterior?.h || 700;
+      if (meP) {
+        roomCamX = clamp((meP.rx||0) - canvas.width/2, 0, Math.max(0, iw - canvas.width));
+        roomCamY = clamp((meP.ry||0) - canvas.height/2, 0, Math.max(0, ih - canvas.height));
+      } else { roomCamX = roomCamY = 0; }
 
-      // Draw players in this exact space
+      // Draw room scene + dock
+      const drawRm = { ...rm, interior: targetInterior, name: rm?.name, subrooms: rm?.subrooms || [] };
+      if (drawRm) drawRoomScene(drawRm);
+
+      // Players in this exact space
       for (const p of interPlayers) {
         if (p.roomId !== currentRoomId) continue;
-        if (!!p.subroomId !== !!currentSubroomId) continue; // one in subroom vs lobby
+        if (!!p.subroomId !== !!currentSubroomId) continue;
         if (p.subroomId && p.subroomId !== currentSubroomId) continue;
         const x = Math.round((p.rx || 0) - roomCamX), y = Math.round((p.ry || 0) - roomCamY);
-        drawAvatarAndName(x, y, p.name, p.color, p.id === me); drawChatAt(x, y, p);
+        drawAvatarAndName(x, y, p.name, p.color, p.id === me);
+        drawHeldItem(p.equippedKind, x, y, p.id === me);
+        drawChatAt(x, y, p);
       }
+
+      // Hotbar also visible inside rooms
+      drawHotbar(meP?.equippedKind || null);
     }
 
     requestAnimationFrame((now)=>{ const prev = render.lastTime || now; render.lastTime = now; render(now - prev); });
