@@ -1,5 +1,5 @@
 (() => {
-  // ---------- Socket.IO (force polling so it works on school Wi-Fi) ----------
+  // ================== Socket.IO (force polling for school Wi-Fi) ==================
   const socket = io('/', {
     transports: ['polling'],
     upgrade: false,
@@ -7,7 +7,7 @@
     withCredentials: true
   });
 
-  // ---------- DOM ----------
+  // ================== DOM ==================
   const canvas   = document.getElementById('game');
   const ctx      = canvas.getContext('2d', { alpha: false });
   const statusEl = document.getElementById('status');
@@ -21,22 +21,11 @@
 
   const dpad = document.getElementById('dpad');
 
-  // Create a floating "Use" button (works without changing index.html)
-  const useBtn = document.createElement('button');
-  useBtn.textContent = 'Use (Space)';
-  useBtn.style.cssText = `
-    position: fixed; right: 12px; bottom: 84px; z-index: 20;
-    padding: 10px 14px; border-radius: 12px; font: 600 14px Inter, system-ui;
-    background: rgba(0,0,0,0.55); color: #e8ecff; border: 1px solid rgba(255,255,255,0.12);
-    backdrop-filter: blur(6px); cursor: pointer;
-  `;
-  document.body.appendChild(useBtn);
-
   // Show name modal immediately (CSS default is display:none)
   nameModal.style.display = 'flex';
   nameInput.value = localStorage.getItem('campusName') || '';
 
-  // ---------- Canvas sizing ----------
+  // ================== Canvas sizing ==================
   function resize() {
     canvas.width  = Math.floor(window.innerWidth);
     canvas.height = Math.floor(window.innerHeight);
@@ -44,7 +33,7 @@
   window.addEventListener('resize', resize, { passive: true });
   resize();
 
-  // ---------- World / State ----------
+  // ================== World / State ==================
   let meId = null;
   let radius = 18;
   let world = { width: 3200, height: 2000, obstacles: [], rooms: [] };
@@ -84,7 +73,7 @@
     }
   });
 
-  // ---------- Connection status ----------
+  // ================== Connection status ==================
   const setStatus = (ok, msg) => {
     statusEl.textContent = (ok ? '🟢 ' : '🔴 ') + (msg || (ok ? 'Connected (polling)' : 'Disconnected'));
     statusEl.classList.toggle('ok', ok);
@@ -94,10 +83,10 @@
   socket.on('disconnect',   () => setStatus(false));
   socket.on('connect_error',() => setStatus(false, 'Connect error'));
 
-  // ---------- Load campus.json (fallback — server will send authoritative copy in init) ----------
+  // ================== Load campus.json (fallback) ==================
   fetch('campus.json').then(r => r.json()).then(j => { world = { ...world, ...j }; }).catch(()=>{});
 
-  // ---------- Input (keyboard + dpad) ----------
+  // ================== Input (keyboard + dpad) ==================
   const input = { up:false, down:false, left:false, right:false };
   const keyMap = new Map([
     ['ArrowUp','up'], ['KeyW','up'],
@@ -125,7 +114,7 @@
       return;
     }
 
-    // Space / E: USE toy (new local+server behavior)
+    // Space / E: USE toy
     if ((e.code === 'Space' || e.code === 'KeyE') && document.activeElement !== chatInput) {
       e.preventDefault();
       useToy();
@@ -191,14 +180,14 @@
     });
   }
 
-  // ---------- Name join ----------
+  // ================== Name join ==================
   nameForm.addEventListener('submit', (e) => {
     e.preventDefault();
     const nm = (nameInput.value || '').trim();
     socket.emit('join', nm);
   });
 
-  // ---------- Chat ----------
+  // ================== Chat ==================
   const CHAT_DURATION_MS = 5000;
   let localEcho = null; // show my chat instantly while waiting for echo back
   chatForm.addEventListener('submit', (e) => {
@@ -212,62 +201,28 @@
     chatInput.blur();
   });
 
-  // ---------- Actions (new: local-first animations) ----------
-  const ACTION_DUR = { bat:350, cake:900, pizza:900, mic:1100, book:800, flag:800, laptop:800, ball:900, paint:800 };
-  const TOY_COOLDOWN = ACTION_DUR; // reuse same timings
-  const effects = [];             // both local + remote
-  const lastToyUse = {};          // per-toy cooldown timestamp
+  // ================== Clock sync (align animations across clients) ==================
+  const clock = (() => {
+    // Maintain rolling offset estimate: clientNow - serverNow
+    const N = 20;
+    const samples = [];
+    let offsetMs = 0;
+    function pushServerStamp(serverT) {
+      if (typeof serverT !== 'number' || !isFinite(serverT)) return;
+      const now = Date.now();
+      const off = now - serverT;
+      samples.push(off);
+      if (samples.length > N) samples.shift();
+      // median is robust
+      const sorted = samples.slice().sort((a,b)=>a-b);
+      const mid = Math.floor(sorted.length/2);
+      offsetMs = sorted.length ? (sorted.length%2?sorted[mid]:(sorted[mid-1]+sorted[mid])/2) : off;
+    }
+    function toClientTime(serverTs) { return (serverTs ?? Date.now()) + offsetMs; }
+    return { pushServerStamp, toClientTime };
+  })();
 
-  function getMe() { return currState.players.find(p => p.id === meId); }
-
-  function useToy() {
-    const me = getMe();
-    if (!me || !me.equippedKind) return;
-
-    const kind = me.equippedKind;
-    const now = Date.now();
-    const last = lastToyUse[kind] || 0;
-    const cd = TOY_COOLDOWN[kind] || 600;
-    if (now - last < cd) return; // cooldown gate
-    lastToyUse[kind] = now;
-
-    // figure space, origin, target
-    const inRoom = !!currentRoomId;
-    const origin = inRoom ? { x: me.rx || 0, y: me.ry || 0 } : { x: me.x || 0, y: me.y || 0 };
-    const target = inRoom
-      ? { x: mouseX + roomCamX, y: mouseY + roomCamY }
-      : { x: mouseX + camX,     y: mouseY + camY };
-
-    // 1) play locally immediately (so you always see it)
-    effects.push({
-      id: me.id,
-      kind,
-      space: inRoom ? 'room' : 'campus',
-      roomId: currentRoomId || null,
-      subroomId: currentSubroomId || null,
-      origin, target, ts: now
-    });
-
-    // 2) tell server (so others can see, if server handles 'action')
-    socket.emit('action', { kind, target });
-    // console debug
-    // console.log('[client] useToy emit', { kind, target });
-  }
-
-  // Use button click
-  useBtn.addEventListener('click', useToy);
-
-  // Right-click (and mouseup with button===2) also uses toy
-  canvas.addEventListener('contextmenu', (e) => { e.preventDefault(); useToy(); });
-  canvas.addEventListener('mouseup', (e) => { if (e.button === 2) useToy(); });
-
-  // Receive remote actions (if server broadcasts them)
-  socket.on('action', (e) => {
-    // console.log('[client] recv action', e);
-    effects.push(e);
-  });
-
-  // ---------- Server events ----------
+  // ================== Server events ==================
   socket.on('init', (payload) => {
     meId = payload.id;
     radius = payload.radius || 18;
@@ -284,12 +239,142 @@
   });
 
   socket.on('state', (s) => {
+    // s.t should be a server timestamp; use it for clock sync
+    if (typeof s.t === 'number') clock.pushServerStamp(s.t);
     lastState = currState;
     currState = s;
     interpTime = 0;
   });
 
-  // ---------- Helpers ----------
+  // ================== Toys / Actions (synced animations) ==================
+  // Effects are animation instructions broadcast by server (or created locally as fallback).
+  const ACTION_DUR = { bat:350, cake:900, pizza:900, mic:1100, book:800, flag:800, laptop:800, ball:1100, paint:800 };
+  const effects = []; // {id, kind, space, roomId, subroomId, origin, target, ts, aid?, authoritative?}
+
+  // Hit events (for flash + shake)
+  const hits = []; // {victimId, fromId, space, roomId, subroomId, dir:{x,y}, ts}
+  socket.on('hit', (h) => {
+    // Align to client clock if server provided ts
+    if (typeof h.ts === 'number') h.ts = clock.toClientTime(h.ts);
+    else h.ts = Date.now();
+    hits.push(h);
+  });
+
+  function isHurt(id) {
+    const now = Date.now();
+    for (let i = hits.length - 1; i >= 0; i--) {
+      const h = hits[i];
+      if (now - h.ts > 2200) { hits.splice(i,1); continue; }
+      if (h.victimId === id && now - h.ts < 170) return true;
+    }
+    return false;
+  }
+
+  function lastHitOfMine() {
+    // find most recent hit where I am victim
+    for (let i = hits.length - 1; i >= 0; i--) {
+      if (hits[i].victimId === meId) return hits[i];
+    }
+    return null;
+  }
+
+  function shakeOffset() {
+    const h = lastHitOfMine();
+    if (!h) return { x: 0, y: 0 };
+    const t = Date.now() - h.ts;
+    if (t > 160) return { x: 0, y: 0 };
+    const a = (1 - t/160) * 6; // up to ~6px
+    return { x: Math.sin(t/20) * a, y: Math.cos(t/23) * a };
+  }
+
+  // Generate a local action id to de-dupe local echo vs server echo
+  let aidSeq = 1;
+  function newAid() { return `${meId || 'me'}-${Date.now()}-${aidSeq++}`; }
+
+  function getMe() { return currState.players.find(p => p.id === meId); }
+
+  function useToy() {
+    const me = getMe();
+    if (!me || !me.equippedKind) return;
+
+    const kind = me.equippedKind;
+    const inRoom = !!currentRoomId;
+    const origin = inRoom ? { x: me.rx || 0, y: me.ry || 0 } : { x: me.x || 0, y: me.y || 0 };
+    const target = inRoom
+      ? { x: mouseX + roomCamX, y: mouseY + roomCamY }
+      : { x: mouseX + camX,     y: mouseY + camY };
+    const aid = newAid();
+
+    // Local optimistic effect (so you see it instantly)
+    effects.push({
+      id: me.id, kind,
+      space: inRoom ? 'room' : 'campus',
+      roomId: currentRoomId || null,
+      subroomId: currentSubroomId || null,
+      origin, target,
+      ts: Date.now(),         // client time
+      aid,
+      authoritative: false
+    });
+
+    // Ask server to perform action (others will see it, and we resync on echo)
+    socket.emit('action', { kind, target, aid });
+  }
+
+  // Right-click / context menu use
+  canvas.addEventListener('contextmenu', (e) => { e.preventDefault(); useToy(); });
+  canvas.addEventListener('mouseup', (e) => { if (e.button === 2) useToy(); });
+
+  // Receive authoritative action from server
+  socket.on('action', (e) => {
+    // Align server timestamp to client timeline if present
+    const alignedTs = (typeof e.ts === 'number') ? clock.toClientTime(e.ts) : Date.now();
+
+    // If this is our own action, try to reconcile with our local optimistic effect
+    if (e.id === meId) {
+      let matched = null;
+
+      // First try: match by aid if server echoes it back
+      if (e.aid) {
+        matched = effects.find(x => x.aid === e.aid && x.id === meId && x.kind === e.kind);
+      }
+      // Fallback: match by kind + proximity in time (within 600ms)
+      if (!matched) {
+        const near = effects
+          .filter(x => x.id === meId && x.kind === e.kind && !x.authoritative)
+          .sort((a,b)=>Math.abs(alignedTs - a.ts) - Math.abs(alignedTs - b.ts));
+        if (near.length && Math.abs(alignedTs - near[0].ts) < 600) matched = near[0];
+      }
+
+      if (matched) {
+        // Snap local to authoritative
+        matched.space       = e.space;
+        matched.roomId      = e.roomId || null;
+        matched.subroomId   = e.subroomId || null;
+        matched.origin      = e.origin || matched.origin;
+        matched.target      = e.target || matched.target;
+        matched.ts          = alignedTs;
+        matched.authoritative = true;
+        matched.aid         = e.aid || matched.aid;
+        return;
+      }
+    }
+
+    // Otherwise, just push the authoritative effect for others (and ourselves)
+    effects.push({
+      id: e.id, kind: e.kind,
+      space: e.space,
+      roomId: e.roomId || null,
+      subroomId: e.subroomId || null,
+      origin: e.origin,
+      target: e.target,
+      ts: alignedTs,
+      aid: e.aid,
+      authoritative: true
+    });
+  });
+
+  // ================== Helpers ==================
   function lerp(a,b,t){ return a + (b-a)*t; }
   function clamp(v,lo,hi){ return Math.max(lo, Math.min(hi, v)); }
 
@@ -346,7 +431,7 @@
     return m;
   }
 
-  // ---------- Drawing utilities ----------
+  // ================== Drawing utilities ==================
   function drawCampusGrid() {
     const grid = 120;
     const startX = -((camX % grid) + grid) % grid;
@@ -488,7 +573,7 @@
     }
   }
 
-  // ---------- Room scene ----------
+  // ================== Room scene ==================
   function drawRoomGrid() {
     const grid = 100;
     const startX = -((roomCamX % grid) + grid) % grid;
@@ -583,7 +668,7 @@
     return { iw, ih };
   }
 
-  // ---------- Action FX ----------
+  // ================== Action FX (draw) ==================
   function drawEffects(whichSpace){
     const now = Date.now();
     for (let i = effects.length - 1; i >= 0; i--) {
@@ -633,7 +718,7 @@
         }
         case 'ball': {
           const dx = tx - sx, dy = ty - sy; const dist = Math.hypot(dx,dy) || 1;
-          const travel = Math.min(dist, 800 * (now - e.ts) / 1000);
+          const travel = Math.min(dist, 900 * (now - e.ts) / 1000);
           const px = sx + dx/dist * travel, py = sy + dy/dist * travel;
           ctx.font='22px "Apple Color Emoji","Segoe UI Emoji",system-ui'; ctx.textAlign='center';
           ctx.fillText('⚽', px, py+8);
@@ -681,7 +766,7 @@
     }
   }
 
-  // ---------- Hotbar (toys) ----------
+  // ================== Hotbar (toys) ==================
   function drawHotbar(myEquippedKind) {
     const items = TOYS;
     const pad = 10, slot = 40, gap = 8;
@@ -727,7 +812,7 @@
     ctx.fillText('Right-click / Space / E to use • 0 clears • 1–9 equips (unless used for subrooms)', x + totalW/2, y - 6);
   }
 
-  // ---------- Render loop ----------
+  // ================== Render loop ==================
   function render(dt) {
     ctx.fillStyle = '#0b0f14';
     ctx.fillRect(0,0,canvas.width,canvas.height);
@@ -745,10 +830,11 @@
     const me = players.find(p => p.id === meId);
 
     if (!currentRoomId) {
-      // Campus camera follow
+      // Campus camera follow (+ shake if hurt)
       if (me) {
-        camX = clamp(me.x - canvas.width / 2, 0, Math.max(0, (world.width || 3200) - canvas.width));
-        camY = clamp(me.y - canvas.height/ 2, 0, Math.max(0, (world.height|| 2000) - canvas.height));
+        const sh = shakeOffset();
+        camX = clamp(me.x - canvas.width / 2, 0, Math.max(0, (world.width || 3200) - canvas.width)) + sh.x;
+        camY = clamp(me.y - canvas.height/ 2, 0, Math.max(0, (world.height|| 2000) - canvas.height)) + sh.y;
       } else { camX = 0; camY = 0; }
 
       drawCampusGrid();
@@ -758,6 +844,21 @@
       for (const p of players) if (!p.roomId) {
         const x = Math.round(p.x - camX);
         const y = Math.round(p.y - camY);
+
+        // hurt flash ring / tint
+        if (isHurt(p.id)) {
+          ctx.beginPath();
+          ctx.arc(x, y, radius + 8, 0, Math.PI*2);
+          ctx.strokeStyle = 'rgba(255,80,80,0.75)';
+          ctx.lineWidth = 3;
+          ctx.stroke();
+          ctx.save();
+          ctx.globalCompositeOperation = 'multiply';
+          ctx.fillStyle = 'rgba(255,80,80,0.25)';
+          ctx.beginPath(); ctx.arc(x, y, radius+1, 0, Math.PI*2); ctx.fill();
+          ctx.restore();
+        }
+
         drawAvatarAndName(x, y, p.name, p.color, p.id === meId);
         drawHeldItem(p.equippedKind, x, y);
         drawChatAt(x, y, p);
@@ -773,10 +874,11 @@
       const room = getRoomById(currentRoomId);
       const { iw, ih } = room ? drawRoomScene(room) : { iw:1100, ih:700 };
 
-      // Room cam follow
+      // Room cam follow (+ shake if hurt)
       if (me) {
-        roomCamX = clamp((me.rx || 0) - canvas.width/2, 0, Math.max(0, iw - canvas.width));
-        roomCamY = clamp((me.ry || 0) - canvas.height/2, 0, Math.max(0, ih - canvas.height));
+        const sh = shakeOffset();
+        roomCamX = clamp((me.rx || 0) - canvas.width/2, 0, Math.max(0, iw - canvas.width)) + sh.x;
+        roomCamY = clamp((me.ry || 0) - canvas.height/2, 0, Math.max(0, ih - canvas.height)) + sh.y;
       } else { roomCamX = 0; roomCamY = 0; }
 
       // draw players in this same space
@@ -786,6 +888,20 @@
         if (p.subroomId && p.subroomId !== currentSubroomId) continue;
         const x = Math.round((p.rx || 0) - roomCamX);
         const y = Math.round((p.ry || 0) - roomCamY);
+
+        if (isHurt(p.id)) {
+          ctx.beginPath();
+          ctx.arc(x, y, radius + 8, 0, Math.PI*2);
+          ctx.strokeStyle = 'rgba(255,80,80,0.75)';
+          ctx.lineWidth = 3;
+          ctx.stroke();
+          ctx.save();
+          ctx.globalCompositeOperation = 'multiply';
+          ctx.fillStyle = 'rgba(255,80,80,0.25)';
+          ctx.beginPath(); ctx.arc(x, y, radius+1, 0, Math.PI*2); ctx.fill();
+          ctx.restore();
+        }
+
         drawAvatarAndName(x, y, p.name, p.color, p.id === meId);
         drawHeldItem(p.equippedKind, x, y);
         drawChatAt(x, y, p);
