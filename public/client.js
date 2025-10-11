@@ -21,10 +21,6 @@
 
   const dpad = document.getElementById('dpad');
 
-  // Show name modal immediately (CSS default is display:none)
-  nameModal.style.display = 'flex';
-  nameInput.value = localStorage.getItem('campusName') || '';
-
   // ================== Canvas sizing ==================
   function resize() {
     canvas.width  = Math.floor(window.innerWidth);
@@ -36,7 +32,14 @@
   // ================== World / State ==================
   let meId = null;
   let radius = 18;
+
+  // Active world used for rendering/logic on the client
   let world = { width: 3200, height: 2000, obstacles: [], rooms: [] };
+
+  // If campus.json loads, we keep it here so it can override any server defaults
+  let campusWorld = null;
+
+  // Toys list (server may override)
   let TOYS = ['bat','cake','pizza','mic','book','flag','laptop','ball','paint'];
 
   // Server snapshots for interpolation
@@ -79,12 +82,32 @@
     statusEl.classList.toggle('ok', ok);
     statusEl.classList.toggle('err', !ok);
   };
-  socket.on('connect',      () => setStatus(true));
-  socket.on('disconnect',   () => setStatus(false));
+
+  socket.on('connect', () => {
+    setStatus(true, 'Connected (polling)');
+    // Auto-join with saved name on every connect (fixes "everyone is Penguin")
+    const saved = (localStorage.getItem('campusName') || '').trim();
+    if (saved) {
+      nameInput.value = saved;
+      socket.emit('join', saved);
+      nameModal.style.display = 'none';
+    } else {
+      nameModal.style.display = 'flex';
+    }
+  });
+  socket.on('disconnect',   () => setStatus(false, 'Disconnected'));
   socket.on('connect_error',() => setStatus(false, 'Connect error'));
 
-  // ================== Load campus.json (fallback) ==================
-  fetch('campus.json').then(r => r.json()).then(j => { world = { ...world, ...j }; }).catch(()=>{});
+  // ================== Load campus.json (authoritative for map layout) ==================
+  // If this loads, we prefer its obstacles/rooms over any server defaults.
+  fetch('campus.json')
+    .then(r => r.json())
+    .then(j => {
+      campusWorld = j;
+      // Merge, but let campus.json override structures
+      world = { ...world, ...j };
+    })
+    .catch(() => { /* ignore if missing */ });
 
   // ================== Input (keyboard + dpad) ==================
   const input = { up:false, down:false, left:false, right:false };
@@ -181,10 +204,17 @@
   }
 
   // ================== Name join ==================
+  // Show modal by default; auto-join will hide it on connect if a name is saved.
+  nameModal.style.display = 'flex';
+  nameInput.value = localStorage.getItem('campusName') || '';
+
   nameForm.addEventListener('submit', (e) => {
     e.preventDefault();
     const nm = (nameInput.value || '').trim();
+    if (!nm) return;
     socket.emit('join', nm);
+    localStorage.setItem('campusName', nm);
+    nameModal.style.display = 'none';
   });
 
   // ================== Chat ==================
@@ -213,7 +243,6 @@
       const off = now - serverT;
       samples.push(off);
       if (samples.length > N) samples.shift();
-      // median is robust
       const sorted = samples.slice().sort((a,b)=>a-b);
       const mid = Math.floor(sorted.length/2);
       offsetMs = sorted.length ? (sorted.length%2?sorted[mid]:(sorted[mid-1]+sorted[mid])/2) : off;
@@ -226,11 +255,27 @@
   socket.on('init', (payload) => {
     meId = payload.id;
     radius = payload.radius || 18;
-    if (payload.world) world = { ...world, ...payload.world };
+
+    // Merge worlds carefully:
+    // - If campus.json loaded, we prefer its obstacles/rooms (fixes "custom buildings")
+    // - We still accept width/height from the server if present.
+    if (payload.world) {
+      if (campusWorld) {
+        const { width, height } = payload.world;
+        world = {
+          ...campusWorld,
+          ...(typeof width === 'number' ? { width } : {}),
+          ...(typeof height === 'number' ? { height } : {})
+        };
+      } else {
+        // No campus.json yet → take server world for now (will be overridden once campus.json loads)
+        world = { ...payload.world };
+      }
+    }
+
     if (Array.isArray(payload.toys)) TOYS = payload.toys;
-    const nm = nameInput.value.trim();
-    if (nm) localStorage.setItem('campusName', nm);
-    nameModal.style.display = 'none';
+
+    // Do NOT auto-hide name modal here; let connect/join logic decide.
   });
 
   socket.on('roomChanged', ({ roomId, subroomId }) => {
@@ -247,14 +292,11 @@
   });
 
   // ================== Toys / Actions (synced animations) ==================
-  // Effects are animation instructions broadcast by server (or created locally as fallback).
   const ACTION_DUR = { bat:350, cake:900, pizza:900, mic:1100, book:800, flag:800, laptop:800, ball:1100, paint:800 };
   const effects = []; // {id, kind, space, roomId, subroomId, origin, target, ts, aid?, authoritative?}
 
-  // Hit events (for flash + shake)
   const hits = []; // {victimId, fromId, space, roomId, subroomId, dir:{x,y}, ts}
   socket.on('hit', (h) => {
-    // Align to client clock if server provided ts
     if (typeof h.ts === 'number') h.ts = clock.toClientTime(h.ts);
     else h.ts = Date.now();
     hits.push(h);
@@ -271,7 +313,6 @@
   }
 
   function lastHitOfMine() {
-    // find most recent hit where I am victim
     for (let i = hits.length - 1; i >= 0; i--) {
       if (hits[i].victimId === meId) return hits[i];
     }
@@ -283,7 +324,7 @@
     if (!h) return { x: 0, y: 0 };
     const t = Date.now() - h.ts;
     if (t > 160) return { x: 0, y: 0 };
-    const a = (1 - t/160) * 6; // up to ~6px
+    const a = (1 - t/160) * 6;
     return { x: Math.sin(t/20) * a, y: Math.cos(t/23) * a };
   }
 
@@ -305,19 +346,18 @@
       : { x: mouseX + camX,     y: mouseY + camY };
     const aid = newAid();
 
-    // Local optimistic effect (so you see it instantly)
+    // Local optimistic effect (instant feedback)
     effects.push({
       id: me.id, kind,
       space: inRoom ? 'room' : 'campus',
       roomId: currentRoomId || null,
       subroomId: currentSubroomId || null,
       origin, target,
-      ts: Date.now(),         // client time
+      ts: Date.now(),
       aid,
       authoritative: false
     });
 
-    // Ask server to perform action (others will see it, and we resync on echo)
     socket.emit('action', { kind, target, aid });
   }
 
@@ -325,29 +365,19 @@
   canvas.addEventListener('contextmenu', (e) => { e.preventDefault(); useToy(); });
   canvas.addEventListener('mouseup', (e) => { if (e.button === 2) useToy(); });
 
-  // Receive authoritative action from server
   socket.on('action', (e) => {
-    // Align server timestamp to client timeline if present
     const alignedTs = (typeof e.ts === 'number') ? clock.toClientTime(e.ts) : Date.now();
 
-    // If this is our own action, try to reconcile with our local optimistic effect
     if (e.id === meId) {
       let matched = null;
-
-      // First try: match by aid if server echoes it back
-      if (e.aid) {
-        matched = effects.find(x => x.aid === e.aid && x.id === meId && x.kind === e.kind);
-      }
-      // Fallback: match by kind + proximity in time (within 600ms)
+      if (e.aid) matched = effects.find(x => x.aid === e.aid && x.id === meId && x.kind === e.kind);
       if (!matched) {
         const near = effects
           .filter(x => x.id === meId && x.kind === e.kind && !x.authoritative)
           .sort((a,b)=>Math.abs(alignedTs - a.ts) - Math.abs(alignedTs - b.ts));
         if (near.length && Math.abs(alignedTs - near[0].ts) < 600) matched = near[0];
       }
-
       if (matched) {
-        // Snap local to authoritative
         matched.space       = e.space;
         matched.roomId      = e.roomId || null;
         matched.subroomId   = e.subroomId || null;
@@ -360,7 +390,6 @@
       }
     }
 
-    // Otherwise, just push the authoritative effect for others (and ourselves)
     effects.push({
       id: e.id, kind: e.kind,
       space: e.space,
@@ -381,7 +410,6 @@
   function interpPlayer(pa, pb, t) {
     if (!pa) return pb;
     if (!pb) return pa;
-    // Snap on space change (campus<->room/subroom)
     if (pa.roomId !== pb.roomId || pa.subroomId !== pb.subroomId) return pb;
     return {
       id: pb.id, name: pb.name, color: pb.color,
@@ -591,14 +619,12 @@
     ctx.strokeRect(x, y, w, h);
     ctx.font = '600 14px Inter, sans-serif'; ctx.textAlign='left'; ctx.fillStyle='#e8ecff';
     ctx.fillText(label, x + 12, y + 28);
-    // count badge
     const txt = `👥 ${count}`; const padX=8;
     const bw = Math.ceil(ctx.measureText(txt).width) + padX*2; const bh = 20;
     const bx = x + w - bw - 8, by = y + (h - bh)/2;
     ctx.fillStyle = 'rgba(0,0,0,0.55)'; ctx.fillRect(bx, by, bw, bh);
     ctx.strokeStyle = 'rgba(255,255,255,0.12)'; ctx.strokeRect(bx, by, bw, bh);
     ctx.fillStyle = '#e8ecff'; ctx.textAlign='left'; ctx.fillText(txt, bx + padX, by + bh - 6);
-
     clickZones.push({ x, y, w, h, onClick, tag: 'dock' });
   }
 
@@ -613,12 +639,10 @@
     })();
     const iw = interior?.w || 1100, ih = interior?.h || 700;
 
-    // bg + grid
     ctx.fillStyle = interior?.bg || '#1c2538';
     ctx.fillRect(0,0,canvas.width,canvas.height);
     drawRoomGrid();
 
-    // objects
     for (const o of (interior?.objects || [])) {
       const x = Math.round((o.x || 0) - roomCamX);
       const y = Math.round((o.y || 0) - roomCamY);
@@ -709,7 +733,6 @@
           ctx.beginPath(); ctx.arc(0, 0, radius + 14, start, end);
           ctx.lineWidth = 10; ctx.strokeStyle = `rgba(255,255,255,${0.35*(1-t)})`; ctx.stroke();
           ctx.restore();
-          // smack sparkle
           ctx.font='18px "Apple Color Emoji","Segoe UI Emoji",system-ui'; ctx.textAlign='center';
           ctx.globalAlpha = 1 - t;
           ctx.fillText('💥', sx + Math.cos(ang)*(radius+18), sy + Math.sin(ang)*(radius+18));
@@ -774,11 +797,9 @@
     const x = Math.floor((canvas.width - totalW) / 2);
     const y = canvas.height - 68;
 
-    // frame
     ctx.fillStyle = 'rgba(0,0,0,0.55)'; ctx.fillRect(x, y, totalW, 56);
     ctx.strokeStyle = 'rgba(255,255,255,0.12)'; ctx.strokeRect(x, y, totalW, 56);
 
-    // clear old hotbar zones
     clickZones = clickZones.filter(z => z.tag !== 'hotbar');
 
     let cx = x + pad;
@@ -807,7 +828,6 @@
       cx += slot + gap;
     }
 
-    // hint
     ctx.fillStyle = '#cbd5ff'; ctx.font = '600 12px Inter, sans-serif'; ctx.textAlign = 'center';
     ctx.fillText('Right-click / Space / E to use • 0 clears • 1–9 equips (unless used for subrooms)', x + totalW/2, y - 6);
   }
@@ -845,7 +865,6 @@
         const x = Math.round(p.x - camX);
         const y = Math.round(p.y - camY);
 
-        // hurt flash ring / tint
         if (isHurt(p.id)) {
           ctx.beginPath();
           ctx.arc(x, y, radius + 8, 0, Math.PI*2);
@@ -864,24 +883,19 @@
         drawChatAt(x, y, p);
       }
 
-      // action FX for campus
       drawEffects('campus');
-
-      // Hotbar
       drawHotbar(me?.equippedKind || null);
 
     } else {
       const room = getRoomById(currentRoomId);
       const { iw, ih } = room ? drawRoomScene(room) : { iw:1100, ih:700 };
 
-      // Room cam follow (+ shake if hurt)
       if (me) {
         const sh = shakeOffset();
         roomCamX = clamp((me.rx || 0) - canvas.width/2, 0, Math.max(0, iw - canvas.width)) + sh.x;
         roomCamY = clamp((me.ry || 0) - canvas.height/2, 0, Math.max(0, ih - canvas.height)) + sh.y;
       } else { roomCamX = 0; roomCamY = 0; }
 
-      // draw players in this same space
       for (const p of players) {
         if (p.roomId !== currentRoomId) continue;
         if (!!p.subroomId !== !!currentSubroomId) continue;
@@ -907,14 +921,10 @@
         drawChatAt(x, y, p);
       }
 
-      // action FX for rooms
       drawEffects('room');
-
-      // Hotbar also inside rooms
       drawHotbar(me?.equippedKind || null);
     }
 
-    // schedule next frame
     requestAnimationFrame((now) => {
       const prev = render.last || now;
       render.last = now;
