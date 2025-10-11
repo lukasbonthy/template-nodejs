@@ -21,6 +21,11 @@
 
   const dpad = document.getElementById('dpad');
 
+  // Helper: is the name modal open?
+  function nameModalOpen() {
+    return getComputedStyle(nameModal).display !== 'none';
+  }
+
   // ================== Canvas sizing ==================
   function resize() {
     canvas.width  = Math.floor(window.innerWidth);
@@ -104,7 +109,6 @@
     .then(r => r.json())
     .then(j => {
       campusWorld = j;
-      // Merge, but let campus.json override structures
       world = { ...world, ...j };
     })
     .catch(() => { /* ignore if missing */ });
@@ -120,6 +124,9 @@
   function sendInput(){ socket.emit('input', input); }
 
   document.addEventListener('keydown', (e) => {
+    // Don't hijack keys while name modal is open
+    if (nameModalOpen()) return;
+
     // Enter: attempt to enter building OR focus chat
     if (e.code === 'Enter' && document.activeElement !== chatInput) {
       if (!currentRoomId) {
@@ -210,11 +217,23 @@
 
   nameForm.addEventListener('submit', (e) => {
     e.preventDefault();
+    e.stopPropagation(); // avoid bubbling to document keydown
     const nm = (nameInput.value || '').trim();
     if (!nm) return;
-    socket.emit('join', nm);
-    localStorage.setItem('campusName', nm);
+    socket.emit('join', nm);                 // send name to server
+    localStorage.setItem('campusName', nm);  // persist
+    // Hide now; server will also confirm via 'profile'
     nameModal.style.display = 'none';
+  });
+
+  // Receive server confirmation of my profile (name)
+  socket.on('profile', (p) => {
+    if (!p || p.id !== meId) return;
+    if (p.name) {
+      localStorage.setItem('campusName', p.name);
+      nameInput.value = p.name;
+      nameModal.style.display = 'none';
+    }
   });
 
   // ================== Chat ==================
@@ -274,8 +293,6 @@
     }
 
     if (Array.isArray(payload.toys)) TOYS = payload.toys;
-
-    // Do NOT auto-hide name modal here; let connect/join logic decide.
   });
 
   socket.on('roomChanged', ({ roomId, subroomId }) => {
@@ -619,12 +636,14 @@
     ctx.strokeRect(x, y, w, h);
     ctx.font = '600 14px Inter, sans-serif'; ctx.textAlign='left'; ctx.fillStyle='#e8ecff';
     ctx.fillText(label, x + 12, y + 28);
+    // count badge
     const txt = `👥 ${count}`; const padX=8;
     const bw = Math.ceil(ctx.measureText(txt).width) + padX*2; const bh = 20;
     const bx = x + w - bw - 8, by = y + (h - bh)/2;
     ctx.fillStyle = 'rgba(0,0,0,0.55)'; ctx.fillRect(bx, by, bw, bh);
     ctx.strokeStyle = 'rgba(255,255,255,0.12)'; ctx.strokeRect(bx, by, bw, bh);
     ctx.fillStyle = '#e8ecff'; ctx.textAlign='left'; ctx.fillText(txt, bx + padX, by + bh - 6);
+
     clickZones.push({ x, y, w, h, onClick, tag: 'dock' });
   }
 
@@ -639,10 +658,12 @@
     })();
     const iw = interior?.w || 1100, ih = interior?.h || 700;
 
+    // bg + grid
     ctx.fillStyle = interior?.bg || '#1c2538';
     ctx.fillRect(0,0,canvas.width,canvas.height);
     drawRoomGrid();
 
+    // objects
     for (const o of (interior?.objects || [])) {
       const x = Math.round((o.x || 0) - roomCamX);
       const y = Math.round((o.y || 0) - roomCamY);
@@ -733,6 +754,7 @@
           ctx.beginPath(); ctx.arc(0, 0, radius + 14, start, end);
           ctx.lineWidth = 10; ctx.strokeStyle = `rgba(255,255,255,${0.35*(1-t)})`; ctx.stroke();
           ctx.restore();
+          // smack sparkle
           ctx.font='18px "Apple Color Emoji","Segoe UI Emoji",system-ui'; ctx.textAlign='center';
           ctx.globalAlpha = 1 - t;
           ctx.fillText('💥', sx + Math.cos(ang)*(radius+18), sy + Math.sin(ang)*(radius+18));
@@ -797,9 +819,11 @@
     const x = Math.floor((canvas.width - totalW) / 2);
     const y = canvas.height - 68;
 
+    // frame
     ctx.fillStyle = 'rgba(0,0,0,0.55)'; ctx.fillRect(x, y, totalW, 56);
     ctx.strokeStyle = 'rgba(255,255,255,0.12)'; ctx.strokeRect(x, y, totalW, 56);
 
+    // clear old hotbar zones
     clickZones = clickZones.filter(z => z.tag !== 'hotbar');
 
     let cx = x + pad;
@@ -828,6 +852,7 @@
       cx += slot + gap;
     }
 
+    // hint
     ctx.fillStyle = '#cbd5ff'; ctx.font = '600 12px Inter, sans-serif'; ctx.textAlign = 'center';
     ctx.fillText('Right-click / Space / E to use • 0 clears • 1–9 equips (unless used for subrooms)', x + totalW/2, y - 6);
   }
