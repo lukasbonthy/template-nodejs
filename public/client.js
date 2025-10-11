@@ -21,17 +21,6 @@
 
   const dpad = document.getElementById('dpad');
 
-  // Create a floating "Use" button (works without changing index.html)
-  const useBtn = document.createElement('button');
-  useBtn.textContent = 'Use (Space)';
-  useBtn.style.cssText = `
-    position: fixed; right: 12px; bottom: 84px; z-index: 20;
-    padding: 10px 14px; border-radius: 12px; font: 600 14px Inter, system-ui;
-    background: rgba(0,0,0,0.55); color: #e8ecff; border: 1px solid rgba(255,255,255,0.12);
-    backdrop-filter: blur(6px); cursor: pointer;
-  `;
-  document.body.appendChild(useBtn);
-
   // Show name modal immediately (CSS default is display:none)
   nameModal.style.display = 'flex';
   nameInput.value = localStorage.getItem('campusName') || '';
@@ -84,6 +73,18 @@
     }
   });
 
+  // ---------- Right-click actions (use equipped toy) ----------
+  canvas.addEventListener('contextmenu', (e) => {
+    e.preventDefault();
+    const me = currState.players.find(p => p.id === meId);
+    const kind = me?.equippedKind;
+    if (!kind) return; // need a toy equipped
+    const target = (!currentRoomId)
+      ? { x: mouseX + camX, y: mouseY + camY }
+      : { x: mouseX + roomCamX, y: mouseY + roomCamY };
+    socket.emit('action', { kind, target });
+  });
+
   // ---------- Connection status ----------
   const setStatus = (ok, msg) => {
     statusEl.textContent = (ok ? '🟢 ' : '🔴 ') + (msg || (ok ? 'Connected (polling)' : 'Disconnected'));
@@ -122,13 +123,6 @@
         }
       }
       chatInput.focus();
-      return;
-    }
-
-    // Space / E: USE toy (new local+server behavior)
-    if ((e.code === 'Space' || e.code === 'KeyE') && document.activeElement !== chatInput) {
-      e.preventDefault();
-      useToy();
       return;
     }
 
@@ -212,61 +206,6 @@
     chatInput.blur();
   });
 
-  // ---------- Actions (new: local-first animations) ----------
-  const ACTION_DUR = { bat:350, cake:900, pizza:900, mic:1100, book:800, flag:800, laptop:800, ball:900, paint:800 };
-  const TOY_COOLDOWN = ACTION_DUR; // reuse same timings
-  const effects = [];             // both local + remote
-  const lastToyUse = {};          // per-toy cooldown timestamp
-
-  function getMe() { return currState.players.find(p => p.id === meId); }
-
-  function useToy() {
-    const me = getMe();
-    if (!me || !me.equippedKind) return;
-
-    const kind = me.equippedKind;
-    const now = Date.now();
-    const last = lastToyUse[kind] || 0;
-    const cd = TOY_COOLDOWN[kind] || 600;
-    if (now - last < cd) return; // cooldown gate
-    lastToyUse[kind] = now;
-
-    // figure space, origin, target
-    const inRoom = !!currentRoomId;
-    const origin = inRoom ? { x: me.rx || 0, y: me.ry || 0 } : { x: me.x || 0, y: me.y || 0 };
-    const target = inRoom
-      ? { x: mouseX + roomCamX, y: mouseY + roomCamY }
-      : { x: mouseX + camX,     y: mouseY + camY };
-
-    // 1) play locally immediately (so you always see it)
-    effects.push({
-      id: me.id,
-      kind,
-      space: inRoom ? 'room' : 'campus',
-      roomId: currentRoomId || null,
-      subroomId: currentSubroomId || null,
-      origin, target, ts: now
-    });
-
-    // 2) tell server (so others can see, if server handles 'action')
-    socket.emit('action', { kind, target });
-    // console debug
-    // console.log('[client] useToy emit', { kind, target });
-  }
-
-  // Use button click
-  useBtn.addEventListener('click', useToy);
-
-  // Right-click (and mouseup with button===2) also uses toy
-  canvas.addEventListener('contextmenu', (e) => { e.preventDefault(); useToy(); });
-  canvas.addEventListener('mouseup', (e) => { if (e.button === 2) useToy(); });
-
-  // Receive remote actions (if server broadcasts them)
-  socket.on('action', (e) => {
-    // console.log('[client] recv action', e);
-    effects.push(e);
-  });
-
   // ---------- Server events ----------
   socket.on('init', (payload) => {
     meId = payload.id;
@@ -288,6 +227,11 @@
     currState = s;
     interpTime = 0;
   });
+
+  // Right-click action FX from server
+  const ACTION_DUR = { bat:350, cake:900, pizza:900, mic:1100, book:800, flag:800, laptop:800, ball:900, paint:800 };
+  const effects = []; // {id,kind,space,roomId,subroomId,origin:{x,y},target:{x,y},ts}
+  socket.on('action', (e) => { effects.push(e); });
 
   // ---------- Helpers ----------
   function lerp(a,b,t){ return a + (b-a)*t; }
@@ -724,7 +668,7 @@
 
     // hint
     ctx.fillStyle = '#cbd5ff'; ctx.font = '600 12px Inter, sans-serif'; ctx.textAlign = 'center';
-    ctx.fillText('Right-click / Space / E to use • 0 clears • 1–9 equips (unless used for subrooms)', x + totalW/2, y - 6);
+    ctx.fillText('Right-click to use your toy • 0 clears • 1–9 equips (unless used for subrooms)', x + totalW/2, y - 6);
   }
 
   // ---------- Render loop ----------
