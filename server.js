@@ -1,6 +1,6 @@
 // server.js
-// Virtual Campus server: serves your campus.json, reliable name setting,
-// synced toys/FX, and bat knockback. Works with polling-only clients.
+// Virtual Campus server: serves your campus.json, reliable naming,
+// synced toys/FX, bat knockback — and KICKS duplicate-name "copy" users.
 
 const fs = require('fs');
 const path = require('path');
@@ -26,6 +26,10 @@ const BAT_HIT_COOLDOWN_MS    = 350;             // per-victim i-frames
 
 // Toys available (order matters: matches client)
 const TOYS = ['bat','cake','pizza','mic','book','flag','laptop','ball','paint'];
+
+// Duplicate-name policy:
+// Keep the earliest-connected user with a given name; kick all later copies.
+const ENFORCE_UNIQUE_NAMES = true;
 
 // ------------------------------ Campus loading ------------------------------
 /** Strip // and /* *\/ comments from JSON for leniency */
@@ -119,6 +123,11 @@ function safeName(s = '') {
   s = s.replace(/[^\p{L}\p{N} _\-'.]/gu, '').trim();
   return s || 'Penguin';
 }
+
+function normName(s = '') {
+  return String(s).toLowerCase().replace(/\s+/g, ' ').trim();
+}
+
 function randomColor() {
   const hues = [200, 210, 220, 235, 250, 260];
   const h = hues[Math.floor(Math.random()*hues.length)];
@@ -131,6 +140,39 @@ function subroomById(room, subId) {
   if (!room) return null;
   return (room.subrooms || []).find(s => s.id === subId) || null;
 }
+
+// Kick a socket by id with a reason (sends 'kicked' first)
+function kickSocket(id, reason) {
+  const s = io.sockets.sockets.get(id);
+  if (!s) return;
+  try { s.emit('kicked', { reason }); } catch {}
+  setTimeout(() => { try { s.disconnect(true); } catch {} }, 10);
+}
+
+// Enforce unique names: keep earliest-connected, kick later copies
+function enforceUniqueNames() {
+  if (!ENFORCE_UNIQUE_NAMES) return;
+  const by = new Map(); // normName -> [{id, connectedAt}]
+  for (const [, p] of players) {
+    const key = normName(p.name);
+    if (!key) continue;
+    if (!by.has(key)) by.set(key, []);
+    by.get(key).push({ id: p.id, connectedAt: p.connectedAt || 0 });
+  }
+  for (const [key, arr] of by) {
+    if (arr.length <= 1) continue;
+    arr.sort((a,b) => a.connectedAt - b.connectedAt);
+    const keep = arr[0].id;
+    for (let i = 1; i < arr.length; i++) {
+      if (arr[i].id !== keep) {
+        kickSocket(arr[i].id, `duplicate_name:${key}`);
+      }
+    }
+  }
+}
+
+// Sweep every 15s to catch duplicates that slipped in earlier
+setInterval(enforceUniqueNames, 15000);
 
 // ------------------------------ Socket handlers ------------------------------
 io.on('connection', (socket) => {
@@ -149,7 +191,8 @@ io.on('connection', (socket) => {
     input: { up:false, down:false, left:false, right:false },
     chatText: null,
     chatTs: 0,
-    lastHitTs: 0
+    lastHitTs: 0,
+    connectedAt: Date.now()
   });
 
   // Send authoritative world (the same one served at /campus.json)
@@ -160,19 +203,75 @@ io.on('connection', (socket) => {
     toys: TOYS
   });
 
-  // Client sets their name here (and we confirm back)
+  // Client sets their name here (and we confirm back).
+  // If another user already has this name (case/space-insensitive),
+  // we KEEP the earliest-connected user and KICK the later "copy".
   socket.on('join', (rawName) => {
     const p = players.get(socket.id);
     if (!p) return;
-    p.name = safeName(rawName);
+    const desired = safeName(rawName);
+    const key = normName(desired);
+
+    // Find all users currently holding that name (normalized)
+    const holders = [];
+    for (const [, q] of players) if (normName(q.name) === key) {
+      holders.push(q);
+    }
+
+    // If no one has it (or only me), set & confirm
+    if (holders.length === 0 || (holders.length === 1 && holders[0].id === socket.id)) {
+      p.name = desired;
+      io.to(socket.id).emit('profile', { id: p.id, name: p.name });
+      return;
+    }
+
+    // Some have it already → keep earliest-connected holder, kick others
+    holders.sort((a,b) => (a.connectedAt||0) - (b.connectedAt||0));
+    const owner = holders[0];
+
+    if (owner.id !== socket.id) {
+      // I'm a copy → kick me
+      io.to(socket.id).emit('nameError', { code: 'duplicate', name: desired });
+      kickSocket(socket.id, `duplicate_name:${key}`);
+      return;
+    }
+
+    // I am the owner already; set name (if I hadn't yet) and kick any later copies
+    p.name = desired;
+    for (let i = 1; i < holders.length; i++) {
+      if (holders[i].id !== owner.id) {
+        kickSocket(holders[i].id, `duplicate_name:${key}`);
+      }
+    }
     io.to(socket.id).emit('profile', { id: p.id, name: p.name });
   });
 
   // (optional alias)
   socket.on('setName', (rawName) => {
+    // Delegate to same logic as 'join'
+    io.of('/').adapter.emit('join', rawName); // no-op; kept for compatibility
+    // Simpler: call join handler body directly
     const p = players.get(socket.id);
     if (!p) return;
-    p.name = safeName(rawName);
+    const desired = safeName(rawName);
+    const key = normName(desired);
+
+    const holders = [];
+    for (const [, q] of players) if (normName(q.name) === key) holders.push(q);
+
+    holders.sort((a,b) => (a.connectedAt||0) - (b.connectedAt||0));
+    const owner = holders[0];
+
+    if (owner && owner.id !== socket.id) {
+      io.to(socket.id).emit('nameError', { code: 'duplicate', name: desired });
+      kickSocket(socket.id, `duplicate_name:${key}`);
+      return;
+    }
+
+    p.name = desired;
+    for (let i = 1; i < holders.length; i++) {
+      if (holders[i].id !== socket.id) kickSocket(holders[i].id, `duplicate_name:${key}`);
+    }
     io.to(socket.id).emit('profile', { id: p.id, name: p.name });
   });
 
@@ -256,13 +355,13 @@ io.on('connection', (socket) => {
     const payload = {
       id: a.id,
       kind,
-      aid,                   // echo client action id for reconciliation
+      aid,
       space: inRoom ? 'room' : 'campus',
       roomId: a.roomId || null,
       subroomId: a.subroomId || null,
       origin,
       target: tgt,
-      ts: Date.now()        // server time for clock sync
+      ts: Date.now()
     };
 
     io.emit('action', payload);
