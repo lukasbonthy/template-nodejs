@@ -1,6 +1,6 @@
 // server.js
-// Multiplayer “Virtual Campus” (rooms/subrooms, toys, synced FX, bat knockback)
-// + solid static serving (fixes "Cannot GET /") + debug endpoints.
+// Virtual Campus server: serves your exact campus.json (no overwrite),
+// keeps player names set via `join`, and syncs toys/FX + bat knockback.
 
 const fs = require('fs');
 const path = require('path');
@@ -27,8 +27,46 @@ const BAT_HIT_COOLDOWN_MS    = 350;             // per-victim i-frames
 // Toys available (order matters: matches client)
 const TOYS = ['bat','cake','pizza','mic','book','flag','laptop','ball','paint'];
 
-// ------------------------------ World ------------------------------
-let world = {
+// ------------------------------ Campus loading ------------------------------
+/**
+ * Many folks add comments to campus.json. Parse "JSONC" safely by stripping
+ * // line and /* block *\/ comments before JSON.parse.
+ */
+function stripJsonComments(str) {
+  if (typeof str !== 'string') return str;
+  // Remove /* */ blocks
+  let s = str.replace(/\/\*[\s\S]*?\*\//g, '');
+  // Remove // line comments (not perfect inside strings, but works for typical maps)
+  s = s.replace(/(^|[^:\\])\/\/.*$/gm, '$1');
+  return s.trim();
+}
+
+/**
+ * Load campus.json from ./public/campus.json or ./campus.json (prefer public).
+ * If neither found or invalid, return null.
+ */
+function loadCampusFile() {
+  const publicPath = path.join(__dirname, 'public', 'campus.json');
+  const rootPath   = path.join(__dirname, 'campus.json');
+  let filePath = null;
+
+  if (fs.existsSync(publicPath)) filePath = publicPath;
+  else if (fs.existsSync(rootPath)) filePath = rootPath;
+
+  if (!filePath) return null;
+
+  try {
+    const raw = fs.readFileSync(filePath, 'utf8').replace(/^\uFEFF/, ''); // strip BOM
+    const parsed = JSON.parse(stripJsonComments(raw));
+    return parsed;
+  } catch (e) {
+    console.error('[server] Failed to parse campus.json:', e.message);
+    return null;
+  }
+}
+
+// Fallback world in case no campus.json is present/valid
+const DEFAULT_WORLD = {
   width: 3200,
   height: 2000,
   obstacles: [
@@ -38,78 +76,11 @@ let world = {
     { x: 1650, y: 220,  w: 360, h: 200, label: 'D Wing' },
     { x: 2200, y: 260,  w: 380, h: 220, label: 'Gym' },
   ],
-  rooms: [
-    {
-      id: 'a',
-      name: 'A Wing',
-      enter: { x: 200, y: 180, w: 260, h: 180 },
-      interior: {
-        w: 1100, h: 700, bg: '#1c2538',
-        spawn: { x: 240, y: 340 },
-        objects: [
-          { x: 120, y: 120, w: 220, h: 120, label: 'Tables' },
-          { x: 420, y: 280, w: 180, h: 90,  label: 'Sofa'   },
-        ]
-      },
-      subrooms: [
-        {
-          id: 'a1', name: 'Classroom 1',
-          interior: { w: 1000, h: 680, bg: '#1f2a44',
-            spawn: { x: 200, y: 320 },
-            objects: [
-              { x: 120, y: 120, w: 200, h: 120, label: 'Desks' },
-              { x: 520, y: 200, w: 160, h: 100, label: 'Lab' },
-            ]
-          }
-        },
-        {
-          id: 'a2', name: 'Classroom 2',
-          interior: { w: 1000, h: 680, bg: '#22304f',
-            spawn: { x: 240, y: 360 },
-            objects: [
-              { x: 140, y: 160, w: 180, h: 120, label: 'Desks' },
-              { x: 520, y: 240, w: 200, h: 100, label: 'Project' },
-            ]
-          }
-        }
-      ]
-    },
-    {
-      id: 'c',
-      name: 'C Wing',
-      enter: { x: 1100, y: 220, w: 320, h: 180 },
-      interior: {
-        w: 1200, h: 720, bg: '#192238',
-        spawn: { x: 260, y: 360 },
-        objects: [
-          { x: 160, y: 160, w: 260, h: 140, label: 'Benches' },
-          { x: 560, y: 260, w: 190, h: 100, label: 'Whiteboard' },
-        ]
-      },
-      subrooms: [
-        {
-          id: 'c1', name: 'Classroom 1',
-          interior: { w: 1000, h: 680, bg: '#233456',
-            spawn: { x: 220, y: 340 },
-            objects: [
-              { x: 120, y: 130, w: 220, h: 120, label: 'Desks' },
-              { x: 520, y: 220, w: 180, h: 100, label: 'Lab' },
-            ]
-          }
-        }
-      ]
-    },
-  ]
+  rooms: []
 };
 
-// Load ./campus.json if present (must be valid JSON, no comments)
-try {
-  const raw = fs.readFileSync(path.join(__dirname, 'campus.json'), 'utf8');
-  const parsed = JSON.parse(raw);
-  world = { ...world, ...parsed };
-} catch (e) {
-  console.log('[server] campus.json not loaded (using defaults):', e.message);
-}
+let world = loadCampusFile() || DEFAULT_WORLD;
+console.log('[server] Campus source:', world === DEFAULT_WORLD ? 'DEFAULT (no campus.json found/valid)' : 'campus.json loaded');
 
 // ------------------------------ App & IO ------------------------------
 const app = express();
@@ -120,81 +91,49 @@ const io = new Server(server, {
   path: '/socket.io'
 });
 
-// ---------- Static & Routing (robust) ----------
+// Static: support both /public and root side-by-side
 const publicDir = path.join(__dirname, 'public');
-const hasPublic = fs.existsSync(publicDir);
-const rootIndex = path.join(__dirname, 'index.html');
-const publicIndex = path.join(publicDir, 'index.html');
-
-console.log('[static] __dirname:', __dirname);
-console.log('[static] publicDir exists:', hasPublic ? 'yes' : 'no');
-console.log('[static] root index exists:', fs.existsSync(rootIndex) ? 'yes' : 'no');
-console.log('[static] public index exists:', fs.existsSync(publicIndex) ? 'yes' : 'no');
-
-if (hasPublic) app.use(express.static(publicDir, { fallthrough: true }));
+if (fs.existsSync(publicDir)) app.use(express.static(publicDir, { fallthrough: true }));
 app.use(express.static(__dirname, { fallthrough: true }));
 
-function sendIndex(req, res) {
+// Serve campus.json exactly as the client expects (so client map matches server)
+app.get('/campus.json', (req, res) => res.json(world));
+
+// Root route → serve index.html (from public or root)
+app.get('/', (req, res) => {
+  const publicIndex = path.join(publicDir, 'index.html');
+  const rootIndex   = path.join(__dirname, 'index.html');
   if (fs.existsSync(publicIndex)) return res.sendFile(publicIndex);
   if (fs.existsSync(rootIndex))   return res.sendFile(rootIndex);
-  // Fallback inline HTML so you never see "Cannot GET /"
+  // fallback HTML
   res
     .status(200)
     .type('html')
     .send(`<!doctype html><meta charset="utf-8">
-<title>Virtual Campus (fallback)</title>
-<style>body{margin:0;background:#0b0f14;color:#e8ecff;font:14px/1.4 system-ui;padding:24px}</style>
+<title>Virtual Campus</title>
+<style>body{margin:0;background:#0b0f14;color:#e8ecff;font:14px/1.45 system-ui;padding:24px}</style>
 <h1>Virtual Campus</h1>
-<p>No <code>index.html</code> found.</p>
-<p>Create one in either:</p>
-<pre>./public/index.html
-./index.html</pre>
-<p>If you already have it locally, make sure it’s committed so your host deploys it.</p>
-<ul>
-<li>Client script expected at <code>/client.js</code></li>
-<li>Styles at <code>/style.css</code></li>
-<li>Socket.IO client at <code>/socket.io/socket.io.js</code></li>
-</ul>`);
-}
-
-// Root route
-app.get('/', (req, res) => sendIndex(req, res));
-
-// Optional SPA catch-all (kept AFTER static). Don’t swallow Socket.IO.
-app.get('*', (req, res, next) => {
-  if (req.path.startsWith('/socket.io/')) return next(); // let Socket.IO handle
-  return sendIndex(req, res);
+<p>No <code>index.html</code> found. Place it in <code>./public</code> or next to <code>server.js</code>.</p>`);
 });
 
-// Health & debug
+// Health
 app.get('/healthz', (_req, res) => res.json({ ok: true }));
-app.get('/__debug', (_req, res) => {
-  const list = p => (fs.existsSync(p) ? fs.readdirSync(p) : []);
-  res.json({
-    cwd: process.cwd(),
-    dirname: __dirname,
-    publicDir,
-    hasPublic,
-    rootIndexExists: fs.existsSync(rootIndex),
-    publicIndexExists: fs.existsSync(publicIndex),
-    rootFiles: list(__dirname),
-    publicFiles: list(publicDir)
-  });
-});
 
-// ------------------------------ Players ------------------------------
+// ------------------------------ Utilities ------------------------------
 const players = new Map();
 
 function safeName(s = '') {
-  s = String(s).slice(0, 16);
-  s = s.replace(/[^A-Za-z0-9 \-'.]/g, '').trim();
+  s = String(s).slice(0, 16).trim();
+  // Allow letters/numbers/space/underscore/hyphen/period/apostrophe (and most unicode letters/numbers)
+  s = s.replace(/[^\p{L}\p{N} _\-'.]/gu, '').trim();
   return s || 'Penguin';
 }
 function randomColor() {
-  const hues = [200, 215, 225, 240, 260];
+  const hues = [200, 210, 220, 235, 250, 260];
   const h = hues[Math.floor(Math.random()*hues.length)];
   return `hsl(${h}deg 70% 70%)`;
 }
+
 function roomById(id) {
   return (world.rooms || []).find(r => r.id === id) || null;
 }
@@ -205,6 +144,7 @@ function subroomById(room, subId) {
 
 // ------------------------------ Socket handlers ------------------------------
 io.on('connection', (socket) => {
+  // Create player; name stays 'Penguin' until client sends 'join'
   players.set(socket.id, {
     id: socket.id,
     name: 'Penguin',
@@ -222,20 +162,23 @@ io.on('connection', (socket) => {
     lastHitTs: 0
   });
 
+  // Send authoritative world straight from campus.json (or default if missing)
   socket.emit('init', {
     id: socket.id,
     radius: 18,
-    world,
+    world,     // <- exact map used by the server; client should keep this (or its own campus.json identical)
     toys: TOYS
   });
 
+  // Client sets their name here (fixes "everyone is Penguin" once they submit/join or auto-join on connect)
   socket.on('join', (rawName) => {
     const p = players.get(socket.id);
     if (!p) return;
-    p.name = safeName(rawName);
-    if (!p.color) p.color = randomColor();
+    const nm = safeName(rawName);
+    p.name = nm; // persist for the socket lifetime
   });
 
+  // Input movement
   socket.on('input', (inp) => {
     const p = players.get(socket.id);
     if (!p) return;
@@ -245,6 +188,7 @@ io.on('connection', (socket) => {
     };
   });
 
+  // Chat bubble
   socket.on('chat', (txt) => {
     const p = players.get(socket.id);
     if (!p) return;
@@ -253,6 +197,7 @@ io.on('connection', (socket) => {
     p.chatTs = Date.now();
   });
 
+  // Toys
   socket.on('equipKind', ({ kind }) => {
     const p = players.get(socket.id);
     if (!p) return;
@@ -265,6 +210,7 @@ io.on('connection', (socket) => {
     p.equippedKind = null;
   });
 
+  // Rooms / Subrooms
   socket.on('enterRoom', ({ roomId }) => {
     const p = players.get(socket.id);
     const r = roomById(roomId);
@@ -307,7 +253,7 @@ io.on('connection', (socket) => {
 
     const inRoom = !!a.roomId;
     const origin = inRoom ? { x: a.rx, y: a.ry } : { x: a.x, y: a.y };
-    const tgt = clampTarget(kind, target, inRoom ? a.roomId : null, a.subroomId);
+    const tgt = clampTarget(target, inRoom ? a.roomId : null, a.subroomId);
 
     const payload = {
       id: a.id,
@@ -332,12 +278,12 @@ io.on('connection', (socket) => {
 });
 
 // ------------------------------ Helpers ------------------------------
-function clampTarget(_kind, target, roomId, subroomId) {
+function clampTarget(target, roomId, subroomId) {
   const t = target || { x: 0, y: 0 };
   if (!roomId) {
     return {
-      x: Math.max(0, Math.min(world.width,  t.x|0)),
-      y: Math.max(0, Math.min(world.height, t.y|0))
+      x: Math.max(0, Math.min((world.width  || 3200), t.x|0)),
+      y: Math.max(0, Math.min((world.height || 2000), t.y|0))
     };
   } else {
     const r = roomById(roomId);
@@ -420,8 +366,8 @@ function step() {
       p.x  += (baseVx + p.kvx) * DT;
       p.y  += (baseVy + p.kvy) * DT;
 
-      p.x = Math.max(0, Math.min(world.width,  p.x));
-      p.y = Math.max(0, Math.min(world.height, p.y));
+      p.x = Math.max(0, Math.min((world.width  || 3200), p.x));
+      p.y = Math.max(0, Math.min((world.height || 2000), p.y));
 
       p.kvx *= FRICTION;
       p.kvy *= FRICTION;
@@ -464,5 +410,5 @@ setInterval(step, TICK_MS);
 
 // ------------------------------ Start ------------------------------
 server.listen(PORT, () => {
-  console.log(`✅ Virtual Campus server running on http://localhost:${PORT}`);
+  console.log(`✅ Virtual Campus running on http://localhost:${PORT}`);
 });
