@@ -17,7 +17,7 @@ const io = new Server(server, {
 app.use(express.static(path.join(__dirname, 'public')));
 const PORT = process.env.PORT || 3000;
 
-// ---- Tolerant JSON loader (accepts // and /* */ comments) ----
+// tolerant JSON loader (accepts // and /* */ comments)
 function loadCampusJSON(file) {
   const raw = fs.readFileSync(file, 'utf8');
   const cleaned = raw
@@ -37,15 +37,13 @@ function normInterior(i, name) {
     objects: Array.isArray(i?.objects) ? i.objects : []
   };
 }
-
-// Build rooms (with optional subrooms).
 function buildRooms(world) {
   const explicit = Array.isArray(world.rooms) ? world.rooms : [];
   if (explicit.length) {
     return explicit.map((r, i) => ({
       id: r.id || `room_${i}`,
       name: r.name || r.id || `Room ${i+1}`,
-      enter: r.enter, // {x,y,w,h}
+      enter: r.enter,
       interior: normInterior(r.interior, r.name || r.id),
       subrooms: Array.isArray(r.subrooms) ? r.subrooms.map((s, j) => ({
         id: s.id || `sub_${j}`,
@@ -54,7 +52,6 @@ function buildRooms(world) {
       })) : []
     }));
   }
-  // Implicit: every obstacle becomes a room, no subrooms by default.
   const obs = Array.isArray(world.obstacles) ? world.obstacles : [];
   return obs.map((o, i) => ({
     id: `auto_${i}`,
@@ -82,8 +79,8 @@ const CHAT_COOLDOWN_MS = 600;
 // Allowed toys
 const TOYS = new Set(['bat','cake','pizza','mic','book','flag','laptop','ball','paint']);
 
-const players = new Map(); // id -> player
-const inputs  = new Map(); // id -> { up,down,left,right }
+const players = new Map();
+const inputs  = new Map();
 
 function sanitizeName(raw) {
   if (typeof raw !== 'string') return 'Student';
@@ -111,16 +108,12 @@ io.on('connection', (socket) => {
       id: socket.id,
       name,
       color: randomColor(),
-      // campus coords
       x: WORLD.spawn?.x ?? 1600,
       y: WORLD.spawn?.y ?? 1000,
-      // room state (null = on campus)
       roomId: null,
       subroomId: null,
-      // in-room coords
       rx: 0, ry: 0,
-      // toy
-      equippedKind: null, // one of TOYS or null
+      equippedKind: null,
       chat: null,
       _lastChatAt: 0
     };
@@ -140,13 +133,11 @@ io.on('connection', (socket) => {
     const p = players.get(socket.id); if (!p) return;
     const now = Date.now();
     if (now - p._lastChatAt < CHAT_COOLDOWN_MS) return;
-    const text = sanitizeChat(raw);
-    if (!text) return;
-    p.chat = { text, ts: now };
-    p._lastChatAt = now;
+    const text = sanitizeChat(raw); if (!text) return;
+    p.chat = { text, ts: now }; p._lastChatAt = now;
   });
 
-  // Toys
+  // toys
   socket.on('equipKind', ({ kind }) => {
     const p = players.get(socket.id); if (!p) return;
     if (!TOYS.has(kind)) return;
@@ -157,39 +148,33 @@ io.on('connection', (socket) => {
     p.equippedKind = null;
   });
 
-  // Rooms / Subrooms
+  // rooms
   socket.on('enterRoom', ({ roomId }) => {
     const p = players.get(socket.id); if (!p) return;
     const rm = findRoomById(roomId); if (!rm) return;
-    p.roomId = rm.id;
-    p.subroomId = null; // lobby by default
+    p.roomId = rm.id; p.subroomId = null;
     p.rx = Math.floor(rm.interior.w / 2);
     p.ry = Math.floor(rm.interior.h / 2);
     socket.emit('roomChanged', { roomId: p.roomId, subroomId: null });
   });
-
   socket.on('enterSubroom', ({ roomId, subroomId }) => {
     const p = players.get(socket.id); if (!p) return;
     const rm = findRoomById(roomId); if (!rm) return;
     const sr = findSubroom(rm.id, subroomId); if (!sr) return;
-    p.roomId = rm.id;
-    p.subroomId = sr.id;
+    p.roomId = rm.id; p.subroomId = sr.id;
     p.rx = Math.floor(sr.interior.w / 2);
     p.ry = Math.floor(sr.interior.h / 2);
     socket.emit('roomChanged', { roomId: p.roomId, subroomId: p.subroomId });
   });
-
   socket.on('leaveRoom', () => {
     const p = players.get(socket.id); if (!p) return;
-    p.roomId = null;
-    p.subroomId = null;
+    p.roomId = null; p.subroomId = null;
     socket.emit('roomChanged', { roomId: null, subroomId: null });
   });
 
   socket.on('disconnect', () => { players.delete(socket.id); inputs.delete(socket.id); });
 });
 
-// Authoritative tick
 setInterval(() => {
   for (const [id, p] of players) {
     const inp = inputs.get(id); if (!inp) continue;
@@ -198,22 +183,20 @@ setInterval(() => {
     if (inp.right) dx += 1;
     if (inp.up)    dy -= 1;
     if (inp.down)  dy += 1;
-
     if (dx || dy) {
-      const len = Math.hypot(dx, dy) || 1; dx /= len; dy /= len;
-
+      const len = Math.hypot(dx, dy) || 1; dx/=len; dy/=len;
       if (p.roomId) {
         const rm = findRoomById(p.roomId);
         const sr = p.subroomId ? findSubroom(p.roomId, p.subroomId) : null;
         const W = (sr?.interior?.w) || (rm?.interior?.w) || 1100;
         const H = (sr?.interior?.h) || (rm?.interior?.h) || 700;
-        p.rx = clamp(p.rx + dx * SPEED * DT, PLAYER_RADIUS, W - PLAYER_RADIUS);
-        p.ry = clamp(p.ry + dy * SPEED * DT, PLAYER_RADIUS, H - PLAYER_RADIUS);
+        p.rx = clamp(p.rx + dx * 180 * (1/20), PLAYER_RADIUS, W - PLAYER_RADIUS);
+        p.ry = clamp(p.ry + dy * 180 * (1/20), PLAYER_RADIUS, H - PLAYER_RADIUS);
       } else {
         const W = WORLD.width  || 3200;
         const H = WORLD.height || 2000;
-        p.x = clamp(p.x + dx * SPEED * DT, PLAYER_RADIUS, W - PLAYER_RADIUS);
-        p.y = clamp(p.y + dy * SPEED * DT, PLAYER_RADIUS, H - PLAYER_RADIUS);
+        p.x = clamp(p.x + dx * 180 * (1/20), PLAYER_RADIUS, W - PLAYER_RADIUS);
+        p.y = clamp(p.y + dy * 180 * (1/20), PLAYER_RADIUS, H - PLAYER_RADIUS);
       }
     }
   }
@@ -222,19 +205,14 @@ setInterval(() => {
     id: p.id,
     name: p.name,
     color: p.color,
-    // campus coords
     x: Math.round(p.x), y: Math.round(p.y),
-    // room/subroom
-    roomId: p.roomId,
-    subroomId: p.subroomId,
+    roomId: p.roomId, subroomId: p.subroomId,
     rx: Math.round(p.rx), ry: Math.round(p.ry),
-    // toy
     equippedKind: p.equippedKind || null,
-    // chat
     chatText: p.chat?.text || null,
     chatTs: p.chat?.ts || 0
   }));
   io.emit('state', { t: Date.now(), players: snapshot });
-}, 1000 / TICK_RATE);
+}, 1000 / 20);
 
 server.listen(PORT, () => console.log(`Server on http://localhost:${PORT}`));
