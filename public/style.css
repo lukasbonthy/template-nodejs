@@ -10,9 +10,7 @@
 }
 
 * { box-sizing: border-box; }
-html, body {
-  height: 100%;
-}
+html, body { height: 100%; }
 body {
   margin: 0;
   background: var(--bg);
@@ -21,16 +19,16 @@ body {
   overscroll-behavior: none;
 }
 
-/* Canvas stretches to viewport (actual pixel size set by JS) */
+/* Canvas fills viewport (actual pixel size set by JS) */
 #game {
   display: block;
   width: 100vw;
   height: 100vh;
-  background: #0b0f14; /* fallback if canvas clears */
-  touch-action: none;   /* better mobile drag */
+  background: #0b0f14;
+  touch-action: none; /* better mobile drag */
 }
 
-/* ================== HUD (top-left) ================== */
+/* ================== HUD (top) ================== */
 .hud {
   position: fixed;
   top: env(safe-area-inset-top, 0px);
@@ -41,11 +39,10 @@ body {
   align-items: center;
   gap: 16px;
   z-index: 4;
-  pointer-events: none; /* HUD is display-only */
+  pointer-events: none; /* display-only */
 }
 
 .hud .title {
-  pointer-events: none;
   font-weight: 800;
   font-size: 18px;
   letter-spacing: 0.2px;
@@ -54,7 +51,6 @@ body {
 }
 
 .hud .hint {
-  pointer-events: none;
   font-weight: 600;
   font-size: 13px;
   color: var(--muted);
@@ -70,7 +66,6 @@ body {
   border-radius: 10px;
   background: rgba(0,0,0,0.35);
   color: #d7defc;
-  pointer-events: none;
 }
 .status.ok  { border-color: rgba(104, 220, 161, 0.35); }
 .status.err { border-color: rgba(255, 120, 120, 0.35); }
@@ -79,7 +74,7 @@ body {
 .name-modal {
   position: fixed;
   inset: 0;
-  display: none; /* JS sets to flex when needed */
+  display: none; /* JS toggles to flex */
   align-items: center;
   justify-content: center;
   padding: 24px;
@@ -133,12 +128,8 @@ body {
   letter-spacing: 0.2px;
   cursor: pointer;
 }
-#nameForm button:hover {
-  filter: brightness(1.03);
-}
-#nameForm button:active {
-  transform: translateY(1px);
-}
+#nameForm button:hover { filter: brightness(1.03); }
+#nameForm button:active { transform: translateY(1px); }
 
 .name-modal .note {
   margin: 10px 2px 0;
@@ -149,40 +140,39 @@ body {
 }
 
 /* ================== Chat box ================== */
-/* Sits above hotbar; only captures clicks while open (focused) */
+/* Always visible (dim). Sits above the hotbar so they don't overlap. */
 .chatbox {
   position: fixed;
   left: 50%;
   transform: translateX(-50%);
   bottom: calc(env(safe-area-inset-bottom, 0px) + 110px);
   width: min(560px, 92vw);
-  z-index: 5;
+  z-index: 7;
 
-  opacity: 0;
-  pointer-events: none;
-  transition: opacity 120ms ease;
+  opacity: 0.35;           /* visible but subtle */
+  pointer-events: auto;    /* click/tap focuses input */
+  transition: opacity 120ms ease, transform 120ms ease;
 }
-
-.chatbox.open {
-  opacity: 1;
-  pointer-events: auto;
-}
+.chatbox:hover { opacity: 0.55; }
+/* Bright when focused (works even without JS via :focus-within) */
+.chatbox:focus-within,
+.chatbox.open { opacity: 1; }
 
 .chatbox input {
   width: 100%;
   height: 44px;
   padding: 10px 12px;
   border-radius: 12px;
-  border: 1px solid var(--panel-border);
+  border: 1px solid rgba(255,255,255,0.12);
   background: rgba(0,0,0,0.55);
-  color: var(--text);
+  color: #e8ecff;
   outline: none;
   font: 600 14px Inter, system-ui, -apple-system, Segoe UI, Roboto, "Apple Color Emoji", "Segoe UI Emoji";
   backdrop-filter: blur(6px);
 }
 .chatbox input::placeholder { color: rgba(200,210,255,0.55); }
 
-/* Lift on small screens to clear soft-keyboards / dpad/hotbar */
+/* Lift a bit more on small screens so it clears the hotbar/D-pad */
 @media (max-width: 640px) {
   .chatbox {
     bottom: calc(env(safe-area-inset-bottom, 0px) + 132px);
@@ -195,7 +185,7 @@ body {
   position: fixed;
   bottom: calc(env(safe-area-inset-bottom, 0px) + 16px);
   left: calc(env(safe-area-inset-left, 0px) + 16px);
-  display: none; /* default hidden on desktop */
+  display: none; /* hidden on desktop */
   z-index: 6;
   gap: 6px;
   user-select: none;
@@ -233,7 +223,6 @@ body {
 /* ================== Utility ================== */
 .hidden { display: none !important; }
 
-/* Slight focus glow for inputs/buttons */
 input:focus, button:focus {
   outline: 2px solid rgba(103,168,255,0.45);
   outline-offset: 0;
@@ -242,5 +231,8 @@ input:focus, button:focus {
 /* Safe-area padding helpers */
 @supports (padding: max(0px)) {
   .hud { padding-top: max(12px, env(safe-area-inset-top)); }
-  .dpad { bottom: max(16px, env(safe-area-inset-bottom)); left: max(16px, env(safe-area-inset-left)); }
+  .dpad {
+    bottom: max(16px, env(safe-area-inset-bottom));
+    left: max(16px, env(safe-area-inset-left));
+  }
 }
