@@ -7,7 +7,7 @@ const { Server } = require('socket.io');
 const app = express();
 const server = http.createServer(app);
 const io = new Server(server, {
-  transports: ['websocket', 'polling'], // client forces polling; keep fallback flexible
+  transports: ['websocket', 'polling'],
   path: '/socket.io',
   cors: { origin: '*', methods: ['GET','POST'], credentials: true },
   pingInterval: 25000,
@@ -21,8 +21,8 @@ const PORT = process.env.PORT || 3000;
 function loadCampusJSON(file) {
   const raw = fs.readFileSync(file, 'utf8');
   const cleaned = raw
-    .replace(/\/\*[\s\S]*?\*\//g, '')   // /* ... */
-    .replace(/(^|\s)\/\/[^\n\r]*/g, ''); // // ...
+    .replace(/\/\*[\s\S]*?\*\//g, '')
+    .replace(/(^|\s)\/\/[^\n\r]*/g, '');
   return JSON.parse(cleaned);
 }
 const WORLD = loadCampusJSON(path.join(__dirname, 'public', 'campus.json'));
@@ -38,7 +38,7 @@ function normInterior(i, name) {
   };
 }
 
-// Build room list (with optional subrooms).
+// Build rooms (with optional subrooms).
 function buildRooms(world) {
   const explicit = Array.isArray(world.rooms) ? world.rooms : [];
   if (explicit.length) {
@@ -54,7 +54,6 @@ function buildRooms(world) {
       })) : []
     }));
   }
-
   // Implicit: every obstacle becomes a room, no subrooms by default.
   const obs = Array.isArray(world.obstacles) ? world.obstacles : [];
   return obs.map((o, i) => ({
@@ -66,7 +65,6 @@ function buildRooms(world) {
   }));
 }
 const ROOMS = buildRooms(WORLD);
-
 function findRoomById(id) { return ROOMS.find(r => r.id === id) || null; }
 function findSubroom(roomId, subId) {
   const r = findRoomById(roomId); if (!r) return null;
@@ -80,6 +78,9 @@ const PLAYER_RADIUS = 18;
 const NAME_MAX = 16;
 const CHAT_MAX_LEN = 140;
 const CHAT_COOLDOWN_MS = 600;
+
+// Allowed toys
+const TOYS = new Set(['bat','cake','pizza','mic','book','flag','laptop','ball','paint']);
 
 const players = new Map(); // id -> player
 const inputs  = new Map(); // id -> { up,down,left,right }
@@ -118,14 +119,15 @@ io.on('connection', (socket) => {
       subroomId: null,
       // in-room coords
       rx: 0, ry: 0,
+      // toy
+      equippedKind: null, // one of TOYS or null
       chat: null,
       _lastChatAt: 0
     };
     players.set(socket.id, p);
     inputs.set(socket.id, { up: false, down: false, left: false, right: false });
 
-    // send authoritative rooms (with subrooms)
-    socket.emit('init', { id: socket.id, world: { ...WORLD, rooms: ROOMS }, radius: PLAYER_RADIUS });
+    socket.emit('init', { id: socket.id, world: { ...WORLD, rooms: ROOMS }, radius: PLAYER_RADIUS, toys: Array.from(TOYS) });
   });
 
   socket.on('input', (state) => {
@@ -144,6 +146,18 @@ io.on('connection', (socket) => {
     p._lastChatAt = now;
   });
 
+  // Toys
+  socket.on('equipKind', ({ kind }) => {
+    const p = players.get(socket.id); if (!p) return;
+    if (!TOYS.has(kind)) return;
+    p.equippedKind = kind;
+  });
+  socket.on('clearEquip', () => {
+    const p = players.get(socket.id); if (!p) return;
+    p.equippedKind = null;
+  });
+
+  // Rooms / Subrooms
   socket.on('enterRoom', ({ roomId }) => {
     const p = players.get(socket.id); if (!p) return;
     const rm = findRoomById(roomId); if (!rm) return;
@@ -175,7 +189,7 @@ io.on('connection', (socket) => {
   socket.on('disconnect', () => { players.delete(socket.id); inputs.delete(socket.id); });
 });
 
-// Authoritative tick: campus (x,y) vs room/subroom (rx,ry)
+// Authoritative tick
 setInterval(() => {
   for (const [id, p] of players) {
     const inp = inputs.get(id); if (!inp) continue;
@@ -214,6 +228,8 @@ setInterval(() => {
     roomId: p.roomId,
     subroomId: p.subroomId,
     rx: Math.round(p.rx), ry: Math.round(p.ry),
+    // toy
+    equippedKind: p.equippedKind || null,
     // chat
     chatText: p.chat?.text || null,
     chatTs: p.chat?.ts || 0
