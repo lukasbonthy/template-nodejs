@@ -1,6 +1,6 @@
 // server.js
-// Simple multiplayer “Virtual Campus” server with rooms, subrooms, toys,
-// synced action FX, and bat hit/knockback logic. Works with polling-only clients.
+// Multiplayer “Virtual Campus” (rooms/subrooms, toys, synced FX, bat knockback)
+// + solid static serving (fixes "Cannot GET /") + debug endpoints.
 
 const fs = require('fs');
 const path = require('path');
@@ -28,12 +28,10 @@ const BAT_HIT_COOLDOWN_MS    = 350;             // per-victim i-frames
 const TOYS = ['bat','cake','pizza','mic','book','flag','laptop','ball','paint'];
 
 // ------------------------------ World ------------------------------
-// Default in-memory world (used if campus.json is missing/invalid).
 let world = {
   width: 3200,
   height: 2000,
   obstacles: [
-    // keep it sparse; you can swap this by providing a campus.json file
     { x: 200,  y: 180,  w: 260, h: 180, label: 'A Wing' },
     { x: 650,  y: 140,  w: 280, h: 210, label: 'B Wing' },
     { x: 1100, y: 220,  w: 320, h: 180, label: 'C Wing' },
@@ -104,11 +102,10 @@ let world = {
   ]
 };
 
-// Try to load ./campus.json if present (must be valid JSON, no comments)
+// Load ./campus.json if present (must be valid JSON, no comments)
 try {
   const raw = fs.readFileSync(path.join(__dirname, 'campus.json'), 'utf8');
   const parsed = JSON.parse(raw);
-  // Shallow-merge onto defaults
   world = { ...world, ...parsed };
 } catch (e) {
   console.log('[server] campus.json not loaded (using defaults):', e.message);
@@ -118,33 +115,78 @@ try {
 const app = express();
 const server = http.createServer(app);
 const io = new Server(server, {
-  // Allow polling (client forces it), but keep websockets if clients allow
   transports: ['polling', 'websocket'],
   cors: { origin: '*', methods: ['GET','POST'] },
   path: '/socket.io'
 });
 
-// Serve static files (index.html, client.js, style.css, campus.json)
+// ---------- Static & Routing (robust) ----------
+const publicDir = path.join(__dirname, 'public');
+const hasPublic = fs.existsSync(publicDir);
+const rootIndex = path.join(__dirname, 'index.html');
+const publicIndex = path.join(publicDir, 'index.html');
+
+console.log('[static] __dirname:', __dirname);
+console.log('[static] publicDir exists:', hasPublic ? 'yes' : 'no');
+console.log('[static] root index exists:', fs.existsSync(rootIndex) ? 'yes' : 'no');
+console.log('[static] public index exists:', fs.existsSync(publicIndex) ? 'yes' : 'no');
+
+if (hasPublic) app.use(express.static(publicDir, { fallthrough: true }));
 app.use(express.static(__dirname, { fallthrough: true }));
 
-// Health
+function sendIndex(req, res) {
+  if (fs.existsSync(publicIndex)) return res.sendFile(publicIndex);
+  if (fs.existsSync(rootIndex))   return res.sendFile(rootIndex);
+  // Fallback inline HTML so you never see "Cannot GET /"
+  res
+    .status(200)
+    .type('html')
+    .send(`<!doctype html><meta charset="utf-8">
+<title>Virtual Campus (fallback)</title>
+<style>body{margin:0;background:#0b0f14;color:#e8ecff;font:14px/1.4 system-ui;padding:24px}</style>
+<h1>Virtual Campus</h1>
+<p>No <code>index.html</code> found.</p>
+<p>Create one in either:</p>
+<pre>./public/index.html
+./index.html</pre>
+<p>If you already have it locally, make sure it’s committed so your host deploys it.</p>
+<ul>
+<li>Client script expected at <code>/client.js</code></li>
+<li>Styles at <code>/style.css</code></li>
+<li>Socket.IO client at <code>/socket.io/socket.io.js</code></li>
+</ul>`);
+}
+
+// Root route
+app.get('/', (req, res) => sendIndex(req, res));
+
+// Optional SPA catch-all (kept AFTER static). Don’t swallow Socket.IO.
+app.get('*', (req, res, next) => {
+  if (req.path.startsWith('/socket.io/')) return next(); // let Socket.IO handle
+  return sendIndex(req, res);
+});
+
+// Health & debug
 app.get('/healthz', (_req, res) => res.json({ ok: true }));
+app.get('/__debug', (_req, res) => {
+  const list = p => (fs.existsSync(p) ? fs.readdirSync(p) : []);
+  res.json({
+    cwd: process.cwd(),
+    dirname: __dirname,
+    publicDir,
+    hasPublic,
+    rootIndexExists: fs.existsSync(rootIndex),
+    publicIndexExists: fs.existsSync(publicIndex),
+    rootFiles: list(__dirname),
+    publicFiles: list(publicDir)
+  });
+});
 
 // ------------------------------ Players ------------------------------
-/**
- * Player model
- * - campus position: x, y
- * - room position:   rx, ry
- * - user input:      input = { up,down,left,right }
- * - color:           for avatar
- * - velocities:      kvx/kvy (campus knockback), rkvx/rkvy (room knockback)
- * - chat bubble:     chatText, chatTs
- */
 const players = new Map();
 
 function safeName(s = '') {
   s = String(s).slice(0, 16);
-  // letters, numbers, spaces, - ' .
   s = s.replace(/[^A-Za-z0-9 \-'.]/g, '').trim();
   return s || 'Penguin';
 }
@@ -153,7 +195,6 @@ function randomColor() {
   const h = hues[Math.floor(Math.random()*hues.length)];
   return `hsl(${h}deg 70% 70%)`;
 }
-
 function roomById(id) {
   return (world.rooms || []).find(r => r.id === id) || null;
 }
@@ -164,16 +205,14 @@ function subroomById(room, subId) {
 
 // ------------------------------ Socket handlers ------------------------------
 io.on('connection', (socket) => {
-  // Create a stub player; becomes "active" on 'join'
   players.set(socket.id, {
     id: socket.id,
     name: 'Penguin',
     color: randomColor(),
     x: 120 + Math.random()*220, y: 140 + Math.random()*180,
     rx: 240, ry: 340,
-    // knockback velocities only; movement uses direct base speed from input
-    kvx: 0, kvy: 0,     // campus knockback velocity (px/s)
-    rkvx: 0, rkvy: 0,   // room knockback velocity
+    kvx: 0, kvy: 0,
+    rkvx: 0, rkvy: 0,
     roomId: null,
     subroomId: null,
     equippedKind: null,
@@ -183,7 +222,6 @@ io.on('connection', (socket) => {
     lastHitTs: 0
   });
 
-  // Send init snapshot
   socket.emit('init', {
     id: socket.id,
     radius: 18,
@@ -191,7 +229,6 @@ io.on('connection', (socket) => {
     toys: TOYS
   });
 
-  // Join (set name/color fresh)
   socket.on('join', (rawName) => {
     const p = players.get(socket.id);
     if (!p) return;
@@ -199,18 +236,15 @@ io.on('connection', (socket) => {
     if (!p.color) p.color = randomColor();
   });
 
-  // Input
   socket.on('input', (inp) => {
     const p = players.get(socket.id);
     if (!p) return;
-    // Coerce booleans
     p.input = {
       up: !!inp.up, down: !!inp.down,
       left: !!inp.left, right: !!inp.right
     };
   });
 
-  // Chat
   socket.on('chat', (txt) => {
     const p = players.get(socket.id);
     if (!p) return;
@@ -219,7 +253,6 @@ io.on('connection', (socket) => {
     p.chatTs = Date.now();
   });
 
-  // Equip toy
   socket.on('equipKind', ({ kind }) => {
     const p = players.get(socket.id);
     if (!p) return;
@@ -232,7 +265,6 @@ io.on('connection', (socket) => {
     p.equippedKind = null;
   });
 
-  // Rooms
   socket.on('enterRoom', ({ roomId }) => {
     const p = players.get(socket.id);
     const r = roomById(roomId);
@@ -241,7 +273,6 @@ io.on('connection', (socket) => {
     p.subroomId = null;
     const spawn = r?.interior?.spawn || { x: (r?.interior?.w || 1000)/2, y: (r?.interior?.h || 600)/2 };
     p.rx = spawn.x; p.ry = spawn.y;
-    // clear momentum between spaces
     p.kvx = p.kvy = 0; p.rkvx = p.rkvy = 0;
     socket.emit('roomChanged', { roomId: p.roomId, subroomId: p.subroomId });
   });
@@ -281,7 +312,7 @@ io.on('connection', (socket) => {
     const payload = {
       id: a.id,
       kind,
-      aid,                   // echo back client action id for reconciliation
+      aid,                   // echo client action id for reconciliation
       space: inRoom ? 'room' : 'campus',
       roomId: a.roomId || null,
       subroomId: a.subroomId || null,
@@ -292,20 +323,16 @@ io.on('connection', (socket) => {
 
     io.emit('action', payload);
 
-    // Only the bat causes a “hit” + knockback. Add others later if desired.
     if (kind === 'bat') doBatHit(a, payload);
   });
 
-  // Disconnect
   socket.on('disconnect', () => {
     players.delete(socket.id);
   });
 });
 
-// ------------------------------ Helpers (server) ------------------------------
-function clampTarget(kind, target, roomId, subroomId) {
-  // We’ll just clamp to campus bounds (or room interior bounds if we had them on server).
-  // Since effects are mostly cosmetic, light clamping is fine.
+// ------------------------------ Helpers ------------------------------
+function clampTarget(_kind, target, roomId, subroomId) {
   const t = target || { x: 0, y: 0 };
   if (!roomId) {
     return {
@@ -313,7 +340,6 @@ function clampTarget(kind, target, roomId, subroomId) {
       y: Math.max(0, Math.min(world.height, t.y|0))
     };
   } else {
-    // If we know room interior size, clamp to that. Otherwise just sanitize numbers.
     const r = roomById(roomId);
     let w = r?.interior?.w || 1200, h = r?.interior?.h || 720;
     if (subroomId) {
@@ -338,38 +364,34 @@ function doBatHit(attacker, swing) {
     if (sid === attacker.id) continue;
 
     // same space filter
+    let px, py, kvx, kvy;
     if (!inRoom) {
       if (v.roomId) continue;
-      var px = v.x,  py = v.y, kvx = 'kvx', kvy = 'kvy';
+      px = v.x; py = v.y; kvx = 'kvx'; kvy = 'kvy';
     } else {
       if (v.roomId !== attacker.roomId) continue;
       if (!!v.subroomId !== !!attacker.subroomId) continue;
       if (v.subroomId && v.subroomId !== attacker.subroomId) continue;
-      var px = v.rx, py = v.ry, kvx = 'rkvx', kvy = 'rkvy';
+      px = v.rx; py = v.ry; kvx = 'rkvx'; kvy = 'rkvy';
     }
 
     const dx = px - ax, dy = py - ay;
     const dist = Math.hypot(dx, dy);
     if (dist > BAT_RANGE_PX) continue;
 
-    // within arc?
     const toVictim = Math.atan2(dy, dx);
     let dAng = Math.abs(((toVictim - ang + Math.PI) % (2*Math.PI)) - Math.PI);
     if (dAng > BAT_ARC_RAD * 0.5) continue;
 
-    // per-victim i-frames
     if (now - (v.lastHitTs || 0) < BAT_HIT_COOLDOWN_MS) continue;
     v.lastHitTs = now;
 
-    // knockback direction (from attacker -> victim)
     const nx = dist > 0 ? dx / dist : Math.cos(ang);
     const ny = dist > 0 ? dy / dist : Math.sin(ang);
 
-    // apply knockback
     v[kvx] += nx * BAT_KNOCK_PXPS;
     v[kvy] += ny * BAT_KNOCK_PXPS;
 
-    // notify clients for hit flash / shake
     io.emit('hit', {
       victimId: v.id,
       fromId: attacker.id,
@@ -385,7 +407,6 @@ function doBatHit(attacker, swing) {
 // ------------------------------ Simulation tick ------------------------------
 function step() {
   for (const [, p] of players) {
-    // Base movement from input (no inertia)
     let ix = (p.input.right ? 1 : 0) - (p.input.left ? 1 : 0);
     let iy = (p.input.down ? 1 : 0) - (p.input.up ? 1 : 0);
     if (ix || iy) {
@@ -394,27 +415,22 @@ function step() {
     }
 
     if (!p.roomId) {
-      // campus coords
       const baseVx = ix * CAMPUS_SPEED;
       const baseVy = iy * CAMPUS_SPEED;
       p.x  += (baseVx + p.kvx) * DT;
       p.y  += (baseVy + p.kvy) * DT;
 
-      // world bounds
       p.x = Math.max(0, Math.min(world.width,  p.x));
       p.y = Math.max(0, Math.min(world.height, p.y));
 
-      // decay knockback velocity
       p.kvx *= FRICTION;
       p.kvy *= FRICTION;
     } else {
-      // room coords
       const baseVx = ix * ROOM_SPEED;
       const baseVy = iy * ROOM_SPEED;
       p.rx += (baseVx + p.rkvx) * DT;
       p.ry += (baseVy + p.rkvy) * DT;
 
-      // interior bounds clamp (use room or subroom size)
       const r  = roomById(p.roomId);
       const sr = subroomById(r, p.subroomId);
       const w = (sr?.interior?.w) || (r?.interior?.w) || 1200;
@@ -427,7 +443,6 @@ function step() {
     }
   }
 
-  // Broadcast snapshot with server timestamp for client clock sync
   const snap = {
     t: Date.now(),
     players: Array.from(players.values()).map(p => ({
@@ -445,7 +460,6 @@ function step() {
   };
   io.emit('state', snap);
 }
-
 setInterval(step, TICK_MS);
 
 // ------------------------------ Start ------------------------------
