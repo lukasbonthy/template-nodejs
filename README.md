@@ -33,6 +33,3 @@ A lightweight, Club-Penguin-style 2D web world for **Citrus High School (CHS)**.
 - **Subrooms:** Inside a room with subrooms, press **0** for Lobby, **1–9** to jump to subrooms
 
 ---
-
-## 📁 Project structure
-
